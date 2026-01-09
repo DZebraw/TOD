@@ -105,7 +105,7 @@ MonoBehaviour:
     m_Value: {fileID: 8900000, guid: 732d20ad60904bc4b91e2f3d214fd6b0, type: 3}
   spaceEmissionMultiplier:
     m_OverrideState: 1
-    m_Value: 3
+    m_Value: 1000
   spaceRotation:
     m_OverrideState: 0
     m_Value: {x: 0, y: 0, z: 0}
@@ -127,9 +127,6 @@ MonoBehaviour:
   horizonZenithShift:
     m_OverrideState: 0
     m_Value: 0
-  numberOfBounces:
-    m_OverrideState: 0
-    m_Value: 8
   m_SkyVersion: 1
   m_ObsoleteEarthPreset:
     m_OverrideState: 0

@@ -4,7 +4,7 @@ using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.Rendering.HighDefinition;
 
-public class DayCircleController : MonoBehaviour
+public class TODController : MonoBehaviour
 {
     [Range(0,24)]
     public float timeOfDay;
@@ -13,7 +13,11 @@ public class DayCircleController : MonoBehaviour
     public Light sun;
     public Light moon;
     public Volume skyVolume;
+    
+    public List<TODStateAsset> TODStates = new List<TODStateAsset>();
 
+    public AnimationCurve sunIntensity;
+    
     private bool isNight;
 
     void Start()
@@ -32,7 +36,27 @@ public class DayCircleController : MonoBehaviour
     private void OnValidate()
     {
         UpdateTime();
-    }  
+        ApplyCurve();
+
+        sunIntensity = CalculateFinalCurve();
+    }
+
+    private AnimationCurve CalculateFinalCurve()
+    {
+        AnimationCurve finalCurve = new AnimationCurve();
+        foreach (var todState in TODStates)
+        {
+            //TODO:在这里通过编辑器设置的权重来计算最终曲线数值
+            //目前先假设只有一个state
+            finalCurve = todState.sunIntensity;
+        }
+        return finalCurve;
+    }
+
+    private void ApplyCurve()
+    {
+        sun.intensity = sunIntensity.Evaluate(timeOfDay);
+    }
 
     private void UpdateTime() 
     {
@@ -41,7 +65,7 @@ public class DayCircleController : MonoBehaviour
         float moonRotation = sunRotation - 180;
 
         sun.transform.rotation = Quaternion.Euler(sunRotation, -150.0f, 0);
-        moon.transform.rotation = Quaternion.Euler(sunRotation, -150.0f, 0);
+        moon.transform.rotation = Quaternion.Euler(moonRotation, -150.0f, 0);
 
         CheckNightDayTransition(); 
     }
@@ -57,7 +81,7 @@ public class DayCircleController : MonoBehaviour
         }
         else
         {
-            if(moon.transform.rotation.eulerAngles.x > 180)
+            if(sun.transform.rotation.eulerAngles.x > 180)
             {
                 StartNight();
             }

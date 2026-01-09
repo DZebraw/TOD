@@ -10,28 +10,37 @@ MonoBehaviour:
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 009295d6bcd442d4c9b5d44cfe605d66, type: 3}
-  m_Name: Sun Intensity Curve
+  m_Name: State1
   m_EditorClassIdentifier: 
-  curve:
+  sunIntensity:
     serializedVersion: 2
     m_Curve:
     - serializedVersion: 3
       time: 0
-      value: 0
-      inSlope: 0
-      outSlope: 0
-      tangentMode: 0
+      value: 130000
+      inSlope: -14444.444
+      outSlope: -14444.444
+      tangentMode: 34
       weightedMode: 0
       inWeight: 0
-      outWeight: 0
+      outWeight: 0.33333334
+    - serializedVersion: 3
+      time: 9
+      value: 0
+      inSlope: -2830.269
+      outSlope: -2830.269
+      tangentMode: 34
+      weightedMode: 0
+      inWeight: 0.33333334
+      outWeight: 0.33333334
     - serializedVersion: 3
       time: 24
-      value: 0.99765015
-      inSlope: 0
-      outSlope: 0
-      tangentMode: 0
+      value: 131758.6
+      inSlope: 8783.906
+      outSlope: 8783.906
+      tangentMode: 34
       weightedMode: 0
-      inWeight: 0
+      inWeight: 0.33333334
       outWeight: 0
     m_PreInfinity: 2
     m_PostInfinity: 2
