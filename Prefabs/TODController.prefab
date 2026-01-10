@@ -44,8 +44,8 @@ Light:
   serializedVersion: 10
   m_Type: 1
   m_Shape: 0
-  m_Color: {r: 1, g: 1, b: 1, a: 1}
-  m_Intensity: 0
+  m_Color: {r: 0.2645138, g: 0.74583334, b: 0, a: 1}
+  m_Intensity: 130000.016
   m_Range: 10
   m_SpotAngle: 30
   m_InnerSpotAngle: 21.80208
@@ -485,10 +485,4 @@ MonoBehaviour:
   sun: {fileID: 828509189809206712}
   moon: {fileID: 365699266560921494}
   skyVolume: {fileID: 0}
-  TODStates: []
-  sunIntensity:
-    serializedVersion: 2
-    m_Curve: []
-    m_PreInfinity: 2
-    m_PostInfinity: 2
-    m_RotationOrder: 4
+  todState: {fileID: 11400000, guid: 31fc8c28bd8522f4ca4cece691a92855, type: 2}

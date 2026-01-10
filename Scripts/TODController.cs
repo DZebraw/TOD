@@ -3,27 +3,39 @@ using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.Rendering.HighDefinition;
+using UnityEngine.UIElements;
 
 public class TODController : MonoBehaviour
 {
+    public static TODController instance;
     [Range(0,24)]
     public float timeOfDay;
+    private float alpha;
 
     public float oritSpeed = 1.0f;
     public Light sun;
     public Light moon;
     public Volume skyVolume;
     
-    public List<TODStateAsset> TODStates = new List<TODStateAsset>();
-
-    public AnimationCurve sunIntensity;
+    public TODStateAsset todState;
     
     private bool isNight;
 
-    void Start()
+    private void Awake()
     {
+        if(instance == null)
+        {
+            instance = this;	
+        }
+        else
+        {
+            if(instance != this)
+            {
+                Destroy(gameObject);
+            }
+        }
     }
-
+    
     void Update()
     {
         timeOfDay += Time.deltaTime * oritSpeed;
@@ -31,36 +43,28 @@ public class TODController : MonoBehaviour
             timeOfDay = 0;
 
         UpdateTime();
+        ApplyCurve();
     }
 
     private void OnValidate()
     {
         UpdateTime();
         ApplyCurve();
-
-        sunIntensity = CalculateFinalCurve();
-    }
-
-    private AnimationCurve CalculateFinalCurve()
-    {
-        AnimationCurve finalCurve = new AnimationCurve();
-        foreach (var todState in TODStates)
-        {
-            //TODO:在这里通过编辑器设置的权重来计算最终曲线数值
-            //目前先假设只有一个state
-            finalCurve = todState.sunIntensity;
-        }
-        return finalCurve;
     }
 
     private void ApplyCurve()
     {
-        sun.intensity = sunIntensity.Evaluate(timeOfDay);
+        if (todState != null)
+        {
+            sun.intensity = todState.sunIntensity.Evaluate(timeOfDay);
+            sun.color = todState.sunColor.Evaluate(alpha);
+        }
     }
+
 
     private void UpdateTime() 
     {
-        float alpha = timeOfDay / 24.0f;
+        alpha = timeOfDay / 24.0f;
         float sunRotation = Mathf.Lerp(-90, 270, alpha);
         float moonRotation = sunRotation - 180;
 

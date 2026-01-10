@@ -20,6 +20,8 @@ public class TODControllerEditor : Editor
 
         // 绘制 sunIntensity
         DrawSunIntensityUI();
+        
+        //TODO：天气的Toggle开关选项
 
         serializedObject.ApplyModifiedProperties();
     }
@@ -83,9 +85,14 @@ public class TODControllerEditor : Editor
 
     private void DrawSunIntensityUI()
     {
-        SerializedProperty sunIntensityProp = serializedObject.FindProperty("sunIntensity");
-
-        EditorGUILayout.Space(5f);
+        TODController controller = (TODController)target;
+        
+        // ✅ 关键：检查 todState 是否为空
+        if (controller.todState == null)
+        {
+            EditorGUILayout.HelpBox("Please assign a TOD State Asset.", MessageType.Warning);
+            return;
+        }
         EditorGUILayout.LabelField("Sun Intensity", EditorStyles.boldLabel);
 
         // 获取曲线区域
@@ -93,11 +100,9 @@ public class TODControllerEditor : Editor
         EditorGUI.DrawRect(curveRect, new Color(0.15f, 0.15f, 0.15f));
 
         // 绘制曲线
-        AnimationCurve sunIntensityCurve = sunIntensityProp.animationCurveValue;
+        AnimationCurve sunIntensityCurve = controller.todState.sunIntensity;
         Handles.color = Color.green;
         EditorGUI.CurveField(curveRect, sunIntensityCurve);
-
-        EditorGUILayout.Space(10f);
     }
 
     void SetTimeFromMousePosition(Rect sliderRect, float mouseX, SerializedProperty timeProp)
