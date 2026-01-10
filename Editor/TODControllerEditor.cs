@@ -6,46 +6,44 @@ using UnityEngine;
 public class TODControllerEditor : Editor
 {
     private const float TIME_RANGE = 24f;
-    private const int SLIDER_HEIGHT = 30;
+    private const int SLIDER_HEIGHT = 20;
+    private static readonly int s_SliderControlID = "TODTimeSlider".GetHashCode();
 
     public override void OnInspectorGUI()
     {
         serializedObject.Update();
-
-        // 绘制默认的 Inspector，排除 timeOfDay 和 sunIntensity
-        DrawDefaultInspectorExcept("timeOfDay", "sunIntensity");
+        
+        DrawDefaultInspector();
 
         // 绘制 timeOfDay
         DrawTimeOfDayUI();
-
-        // 绘制 sunIntensity
-        DrawSunIntensityUI();
+        
+        //绘制曲线
+        TODController controller = (TODController)target;
+        if (controller != null && controller.todState != null)
+        {
+            DrawFloatCurveUI(controller.todState.sunIntensity, "Sun Intensity");
+            DrawGradientUI(controller.todState.sunColor, "Sun Color");
+            DrawFloatCurveUI(controller.todState.moonIntensity, "Moon Intensity");
+            DrawGradientUI(controller.todState.moonColor, "Moon Color");
+            DrawFloatCurveUI(controller.todState.starEmission, "Star Emission");
+        }
+        else
+        {
+            EditorGUILayout.HelpBox("Please assign a TOD State Asset to view and edit curves.", MessageType.Warning);
+        }
         
         //TODO：天气的Toggle开关选项
 
         serializedObject.ApplyModifiedProperties();
     }
-
-    private void DrawDefaultInspectorExcept(params string[] excludeProps)
-    {
-        var iterator = serializedObject.GetIterator();
-        bool enterChildren = true;
-        while (iterator.NextVisible(enterChildren))
-        {
-            enterChildren = false;
-            if (excludeProps.Contains(iterator.name)) continue;
-            EditorGUILayout.PropertyField(iterator, true);
-        }
-    }
-
+    
     private void DrawTimeOfDayUI()
     {
         SerializedProperty timeOfDayProp = serializedObject.FindProperty("timeOfDay");
-
-        EditorGUILayout.Space(5f);
-        EditorGUILayout.LabelField("Time of Day", EditorStyles.boldLabel);
-
         float currentTime = timeOfDayProp.floatValue;
+        
+        EditorGUILayout.LabelField("Time of Day", EditorStyles.boldLabel);
 
         // 获取滑块区域
         Rect sliderRect = EditorGUILayout.GetControlRect(GUILayout.Height(SLIDER_HEIGHT));
@@ -58,18 +56,37 @@ public class TODControllerEditor : Editor
         Rect handleRect = new Rect(handleX, sliderRect.y + (SLIDER_HEIGHT - handleSize) * 0.5f, handleSize, handleSize);
 
         Event e = Event.current;
-        if (e.type == EventType.MouseDown && sliderRect.Contains(e.mousePosition))
+        int controlID = GUIUtility.GetControlID(s_SliderControlID, FocusType.Passive, sliderRect);
+
+        switch (e.GetTypeForControl(controlID))
         {
-            SetTimeFromMousePosition(sliderRect, e.mousePosition.x, timeOfDayProp);
-            e.Use(); // 标记事件已处理
-        }
-        else if (e.type == EventType.MouseDrag && sliderRect.Contains(e.mousePosition))
-        {
-            SetTimeFromMousePosition(sliderRect, e.mousePosition.x, timeOfDayProp);
-            e.Use();
+            case EventType.MouseDown:
+                if (sliderRect.Contains(e.mousePosition))
+                {
+                    GUIUtility.hotControl = controlID;
+                    SetTimeFromMousePosition(sliderRect, e.mousePosition.x, timeOfDayProp);
+                    e.Use();
+                }
+                break;
+
+            case EventType.MouseDrag:
+                if (GUIUtility.hotControl == controlID)
+                {
+                    SetTimeFromMousePosition(sliderRect, e.mousePosition.x, timeOfDayProp);
+                    e.Use();
+                }
+                break;
+
+            case EventType.MouseUp:
+                if (GUIUtility.hotControl == controlID)
+                {
+                    GUIUtility.hotControl = 0;
+                    e.Use();
+                }
+                break;
         }
 
-        // 绘制手柄（纯视觉，无交互组件）
+        // 绘制手柄
         Color oldColor = GUI.color;
         GUI.color = IsNightTime(currentTime) ? new Color(0.2f, 0.2f, 0.8f) : new Color(0.9f, 0.8f, 0.2f);
         GUI.DrawTexture(handleRect, EditorGUIUtility.whiteTexture, ScaleMode.ScaleToFit);
@@ -79,30 +96,29 @@ public class TODControllerEditor : Editor
         string timeText = $"{Mathf.FloorToInt(currentTime):D2}:{Mathf.FloorToInt((currentTime % 1) * 60):D2}";
         var textRect = new Rect(sliderRect.center.x - 30, sliderRect.yMax + 4, 60, 16);
         GUI.Label(textRect, timeText, EditorStyles.centeredGreyMiniLabel);
-
-        EditorGUILayout.Space(10f);
     }
 
-    private void DrawSunIntensityUI()
+    private void DrawFloatCurveUI(AnimationCurve animationCurve,string label)
     {
-        TODController controller = (TODController)target;
-        
-        // ✅ 关键：检查 todState 是否为空
-        if (controller.todState == null)
-        {
-            EditorGUILayout.HelpBox("Please assign a TOD State Asset.", MessageType.Warning);
-            return;
-        }
-        EditorGUILayout.LabelField("Sun Intensity", EditorStyles.boldLabel);
+        EditorGUILayout.LabelField(label);
 
         // 获取曲线区域
         Rect curveRect = EditorGUILayout.GetControlRect(GUILayout.Height(SLIDER_HEIGHT));
         EditorGUI.DrawRect(curveRect, new Color(0.15f, 0.15f, 0.15f));
 
         // 绘制曲线
-        AnimationCurve sunIntensityCurve = controller.todState.sunIntensity;
         Handles.color = Color.green;
-        EditorGUI.CurveField(curveRect, sunIntensityCurve);
+        EditorGUI.CurveField(curveRect, animationCurve);
+    }
+
+    private void DrawGradientUI(Gradient gradient, string label)
+    {
+        EditorGUILayout.LabelField(label);
+        
+        Rect gradientRect = EditorGUILayout.GetControlRect(GUILayout.Height(SLIDER_HEIGHT));
+        EditorGUI.DrawRect(gradientRect, new Color(0.15f, 0.15f, 0.15f));
+        
+        EditorGUI.GradientField(gradientRect, gradient);
     }
 
     void SetTimeFromMousePosition(Rect sliderRect, float mouseX, SerializedProperty timeProp)

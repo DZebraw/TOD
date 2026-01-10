@@ -1,3 +1,4 @@
+using System;
 using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
@@ -15,11 +16,18 @@ public class TODController : MonoBehaviour
     public float oritSpeed = 1.0f;
     public Light sun;
     public Light moon;
+    
     public Volume skyVolume;
+    private PhysicallyBasedSky sky;
     
     public TODStateAsset todState;
     
     private bool isNight;
+
+    private void Start()
+    {
+        skyVolume.profile.TryGet<PhysicallyBasedSky>(out sky);
+    }
 
     private void Awake()
     {
@@ -49,19 +57,44 @@ public class TODController : MonoBehaviour
     private void OnValidate()
     {
         UpdateTime();
+        
+        // 重新尝试获取 sky（但要确保 volume 和 profile 存在）
+        if (skyVolume != null && skyVolume.profile != null)
+        {
+            skyVolume.profile.TryGet<PhysicallyBasedSky>(out sky);
+        }
+        else
+        {
+            sky = null; // 显式置空，避免残留旧引用
+        }
+        
         ApplyCurve();
     }
 
     private void ApplyCurve()
     {
-        if (todState != null)
+        if (todState == null) return;
+
+        // 光源强度/颜色
+        if (sun != null)
         {
             sun.intensity = todState.sunIntensity.Evaluate(timeOfDay);
             sun.color = todState.sunColor.Evaluate(alpha);
         }
+
+        if (moon != null)
+        {
+            moon.intensity = todState.moonIntensity.Evaluate(timeOfDay);
+            moon.color = todState.moonColor.Evaluate(alpha);
+        }
+
+        // 天空盒（Physically Based Sky）
+        if (sky != null)
+        {
+            sky.spaceEmissionMultiplier.value = todState.starEmission.Evaluate(timeOfDay);
+        }
     }
-
-
+    
     private void UpdateTime() 
     {
         alpha = timeOfDay / 24.0f;

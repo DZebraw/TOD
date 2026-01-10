@@ -12,7 +12,7 @@ public class TODStateAsset : ScriptableObject
     [Header("Moon Settings")]
     public AnimationCurve moonIntensity = new AnimationCurve(new Keyframe(0f, 5000f), new Keyframe(24f, 5000f));
     public Gradient moonColor = new Gradient();
-    public AnimationCurve starEmission = new AnimationCurve();
+    public AnimationCurve starEmission = new AnimationCurve(new Keyframe(0f, 1000f), new Keyframe(24f, 1000f));
 
     [Header("Fog Settings")]
     public AnimationCurve fogDistance = new AnimationCurve();
