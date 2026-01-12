@@ -19,8 +19,10 @@ public class TODController : MonoBehaviour
     
     public Volume skyVolume;
     private PhysicallyBasedSky sky;
+    private VisualEnvironment visualEnvironment;
     
     public TODStateAsset todState;
+    public bool enableCloud = true;
     
     private bool isNight;
 
@@ -57,25 +59,31 @@ public class TODController : MonoBehaviour
     private void OnValidate()
     {
         UpdateTime();
-        
-        // 重新尝试获取 sky（但要确保 volume 和 profile 存在）
+
+        GetVolume();
+
+
+        ApplyCurve();
+    }
+
+    private void GetVolume()
+    {
         if (skyVolume != null && skyVolume.profile != null)
         {
             skyVolume.profile.TryGet<PhysicallyBasedSky>(out sky);
+            skyVolume.profile.TryGet<VisualEnvironment>(out visualEnvironment);
         }
         else
         {
-            sky = null; // 显式置空，避免残留旧引用
+            sky = null;
+            visualEnvironment = null;
         }
-        
-        ApplyCurve();
     }
 
     private void ApplyCurve()
     {
         if (todState == null) return;
 
-        // 光源强度/颜色
         if (sun != null)
         {
             sun.intensity = todState.sunIntensity.Evaluate(timeOfDay);
@@ -92,6 +100,11 @@ public class TODController : MonoBehaviour
         if (sky != null)
         {
             sky.spaceEmissionMultiplier.value = todState.starEmission.Evaluate(timeOfDay);
+        }
+
+        if(visualEnvironment != null)
+        {
+            //TODO:开启cloudLayer
         }
     }
     

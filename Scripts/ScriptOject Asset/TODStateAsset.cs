@@ -1,6 +1,7 @@
 using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.UI;
 
 [CreateAssetMenu(fileName = "New State",menuName = "TODState",order = 100)]
 public class TODStateAsset : ScriptableObject
@@ -17,4 +18,7 @@ public class TODStateAsset : ScriptableObject
     [Header("Fog Settings")]
     public AnimationCurve fogDistance = new AnimationCurve();
     public AnimationCurve fogHeight = new AnimationCurve();
+
+    [Header("Cloud Settings")]
+    public bool EnableCloud;
 }

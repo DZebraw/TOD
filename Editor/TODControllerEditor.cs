@@ -1,4 +1,5 @@
 using System.Linq;
+using Unity.VisualScripting;
 using UnityEditor;
 using UnityEngine;
 
@@ -15,10 +16,8 @@ public class TODControllerEditor : Editor
         
         DrawDefaultInspector();
 
-        // 绘制 timeOfDay
         DrawTimeOfDayUI();
         
-        //绘制曲线
         TODController controller = (TODController)target;
         if (controller != null && controller.todState != null)
         {
@@ -27,13 +26,13 @@ public class TODControllerEditor : Editor
             DrawFloatCurveUI(controller.todState.moonIntensity, "Moon Intensity");
             DrawGradientUI(controller.todState.moonColor, "Moon Color");
             DrawFloatCurveUI(controller.todState.starEmission, "Star Emission");
+            //TODO：天气的Toggle开关选项
         }
         else
         {
             EditorGUILayout.HelpBox("Please assign a TOD State Asset to view and edit curves.", MessageType.Warning);
         }
         
-        //TODO：天气的Toggle开关选项
 
         serializedObject.ApplyModifiedProperties();
     }
@@ -102,11 +101,9 @@ public class TODControllerEditor : Editor
     {
         EditorGUILayout.LabelField(label);
 
-        // 获取曲线区域
         Rect curveRect = EditorGUILayout.GetControlRect(GUILayout.Height(SLIDER_HEIGHT));
         EditorGUI.DrawRect(curveRect, new Color(0.15f, 0.15f, 0.15f));
 
-        // 绘制曲线
         Handles.color = Color.green;
         EditorGUI.CurveField(curveRect, animationCurve);
     }
@@ -119,6 +116,11 @@ public class TODControllerEditor : Editor
         EditorGUI.DrawRect(gradientRect, new Color(0.15f, 0.15f, 0.15f));
         
         EditorGUI.GradientField(gradientRect, gradient);
+    }
+
+    private void DrawToggleUI(bool toogleValue , string label)
+    {
+        
     }
 
     void SetTimeFromMousePosition(Rect sliderRect, float mouseX, SerializedProperty timeProp)
