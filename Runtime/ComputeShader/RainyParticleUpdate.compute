@@ -1,0 +1,70 @@
+#pragma kernel CSMain
+
+RWTexture2D<float4> Result;
+Texture2D<float4> ParticleState;
+
+int2 ParticleCount;
+float2 EmitterSize;
+float DeltaTime;
+
+float BaseFallSpeed;
+float RainDensity;
+#define SPEED_VARIANCE 0.2// 速度变化范围（±20%）
+#define INIT_Y_RANGE 50.0// 初始Y位置范围（0 ~ 50）
+
+float rand(float2 uv)
+{
+    return frac(sin(dot(uv, float2(12.9898, 78.233))) * 43758.5453);
+}
+
+float randRange(float2 uv, float min, float max)
+{
+    return min + rand(uv) * (max - min);
+}
+
+[numthreads(8, 8, 1)]
+void CSMain(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= (uint)ParticleCount.x || id.y >= (uint)ParticleCount.y)
+        return;
+
+    //归一化二维坐标
+    float2 uv = float2(id.x / (float)ParticleCount.x,
+                       id.y / (float)ParticleCount.y);
+
+    //密度控制
+    float particleRandom = rand(uv * 9999.0);
+    if (particleRandom > RainDensity)
+    {
+        Result[id.xy] = float4(0, 1000.0, 0, 0.0);
+        return;
+    }
+
+    float4 currentState = ParticleState.Load(int3(id.xy, 0));
+
+    if (currentState.w == 0.0)
+    {
+        float2 randomPos = float2(
+            rand(uv * 1000.0) * EmitterSize.x - EmitterSize.x * 0.5,
+            rand(uv * 2000.0) * EmitterSize.y - EmitterSize.y * 0.5
+        );
+
+        float randomInitY = randRange(uv * 3000.0, 0.0, INIT_Y_RANGE);
+        float speedOffset = randRange(uv * 4000.0, 1 - SPEED_VARIANCE, 1 + SPEED_VARIANCE);
+
+        currentState = float4(randomPos.x, randomInitY, randomPos.y, -speedOffset);
+    }
+
+    // 每帧计算当前速度
+    float currentSpeed = BaseFallSpeed * abs(currentState.w);
+    
+    currentState.y -= currentSpeed * DeltaTime;
+
+    //掉落到底部重置位置
+    if (currentState.y < -80.0)
+    {
+        currentState.y = randRange(float2(id.x, id.y) * 5000.0, 0.0, INIT_Y_RANGE);
+    }
+
+    Result[id.xy] = currentState;
+}

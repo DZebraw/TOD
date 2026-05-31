@@ -1,0 +1,362 @@
+using UnityEditor;
+using UnityEngine;
+using DawnTOD;
+
+namespace DawnTODEditor
+{
+    [CustomEditor(typeof(DawnWeatherController))]
+    public class DawnWeatherControllerEditor : Editor
+    {
+        private const float TIME_RANGE = 24f;
+        private const int SLIDER_HEIGHT = 24;
+        private const int CURVE_HEIGHT = 24;
+        private static readonly int s_SliderControlID = "TODTimeSlider".GetHashCode();
+
+        private SerializedProperty activePresetProp;
+        private SerializedProperty timeOfDayProp;
+
+        private SerializedObject presetSerializedObject;
+        private SerializedProperty sunAzimuthCurveProp;
+        private SerializedProperty sunElevationProp;
+        private SerializedProperty sunIntensityCurveProp;
+        private SerializedProperty sunColorGradientProp;
+        private SerializedProperty moonAzimuthCurveProp;
+        private SerializedProperty moonElevationProp;
+        private SerializedProperty moonIntensityCurveProp;
+        private SerializedProperty moonColorGradientProp;
+#if USING_HDRP
+        private SerializedProperty starEmissionCurveProp;
+        private SerializedProperty fogHeightCurveProp;
+        private SerializedProperty fogDistanceCurveProp;
+        private SerializedProperty fogColorGradientProp;
+        private SerializedProperty exposureCompensationCurveProp;
+#endif
+        private SerializedProperty rainySpeedCurveProp;
+        private SerializedProperty rainDensityCurveProp;
+        private SerializedProperty rainWindZRotationCurveProp;
+
+        private bool showSunSettings = true;
+        private bool showMoonSettings = true;
+        private bool showSkySettings = true;
+        private bool showFogSettings = true;
+        private bool showExposureSettings = true;
+        private bool showRainySettings = true;
+
+        private void OnEnable()
+        {
+            activePresetProp = serializedObject.FindProperty("activePreset");
+            timeOfDayProp = serializedObject.FindProperty("timeOfDay");
+            
+            if (DawnTODSystem.Instance != null)
+            {
+                timeOfDayProp.floatValue = DawnTODSystem.Instance.TimeOfDay;
+                serializedObject.ApplyModifiedPropertiesWithoutUndo();
+                Repaint();
+            }
+            
+            UpdatePresetSerializedProperties();
+        }
+
+        private void UpdatePresetSerializedProperties()
+        {
+            DawnWeatherPreset preset = activePresetProp.objectReferenceValue as DawnWeatherPreset;
+            if (preset == null)
+            {
+                presetSerializedObject = null;
+                return;
+            }
+
+            presetSerializedObject = new SerializedObject(preset);
+
+            sunAzimuthCurveProp = presetSerializedObject.FindProperty("sunAzimuthCurve");
+            sunElevationProp = presetSerializedObject.FindProperty("sunElevationCurve");
+            sunIntensityCurveProp = presetSerializedObject.FindProperty("sunIntensityCurve");
+            sunColorGradientProp = presetSerializedObject.FindProperty("sunColorGradient");
+            moonAzimuthCurveProp = presetSerializedObject.FindProperty("moonAzimuthCurve");
+            moonElevationProp = presetSerializedObject.FindProperty("moonElevationCurve");
+            moonIntensityCurveProp = presetSerializedObject.FindProperty("moonIntensityCurve");
+            moonColorGradientProp = presetSerializedObject.FindProperty("moonColorGradient");
+#if USING_HDRP
+            starEmissionCurveProp = presetSerializedObject.FindProperty("starEmissionCurve");
+            fogHeightCurveProp = presetSerializedObject.FindProperty("fogHeightCurve");
+            fogDistanceCurveProp = presetSerializedObject.FindProperty("fogDistanceCurve");
+            fogColorGradientProp = presetSerializedObject.FindProperty("fogColorGradient");
+            exposureCompensationCurveProp = presetSerializedObject.FindProperty("exposureCompensationCurve");
+#endif
+            rainySpeedCurveProp = presetSerializedObject.FindProperty("rainySpeedCurve");
+            rainDensityCurveProp = presetSerializedObject.FindProperty("rainDensityCurve");
+            rainWindZRotationCurveProp = presetSerializedObject.FindProperty("rainWindZRotationCurve");
+        }
+
+        public override void OnInspectorGUI()
+        {
+            serializedObject.Update();
+
+            DawnWeatherController controller = (DawnWeatherController)target;
+
+            // ========== 预设 ==========
+            EditorGUILayout.LabelField("Preset", EditorStyles.boldLabel);
+            EditorGUI.BeginChangeCheck();
+            EditorGUILayout.PropertyField(activePresetProp, new GUIContent("Active Preset"));
+            if (EditorGUI.EndChangeCheck())
+            {
+                UpdatePresetSerializedProperties();
+                serializedObject.ApplyModifiedProperties();
+                controller.Refresh();
+                SceneView.RepaintAll();
+            }
+            EditorGUILayout.Space(5);
+
+            // ========== 时间控制 ==========
+            EditorGUILayout.LabelField("Time Control", EditorStyles.boldLabel);
+            EditorGUILayout.Space(5);
+            DrawTimeSlider(controller);
+            EditorGUILayout.Space(3);
+
+            // ========== 预设显示 ==========
+            DawnWeatherPreset preset = activePresetProp.objectReferenceValue as DawnWeatherPreset;
+            if (preset != null && presetSerializedObject != null)
+            {
+                presetSerializedObject.Update();
+
+                //====Sun====
+                showSunSettings = EditorGUILayout.Foldout(showSunSettings, "Sun Settings", true);
+                if (showSunSettings)
+                {
+                    EditorGUI.indentLevel++;
+                    DrawCurveField("Sun Azimation", sunAzimuthCurveProp, controller.NormalizedTime);
+                    DrawCurveField("Sun Elevation", sunElevationProp, controller.NormalizedTime);
+                    DrawCurveField("Sun Intensity", sunIntensityCurveProp, controller.NormalizedTime);
+                    DrawGradientField("Sun Color", sunColorGradientProp, controller.NormalizedTime);
+                    EditorGUI.indentLevel--;
+                }
+                //====Moon====
+                showMoonSettings = EditorGUILayout.Foldout(showMoonSettings, "Moon Settings", true);
+                if (showMoonSettings)
+                {
+                    EditorGUI.indentLevel++;
+                    DrawCurveField("Moon Azimation", moonAzimuthCurveProp, controller.NormalizedTime);
+                    DrawCurveField("Moon Elevation", moonElevationProp, controller.NormalizedTime);
+                    DrawCurveField("Moon Intensity", moonIntensityCurveProp, controller.NormalizedTime);
+                    DrawGradientField("Moon Color", moonColorGradientProp, controller.NormalizedTime);
+                    EditorGUI.indentLevel--;
+                }
+#if USING_HDRP
+                //====Sky====
+                showSkySettings = EditorGUILayout.Foldout(showSkySettings, "Sky Settings", true);
+                if (showSkySettings)
+                {
+                    EditorGUI.indentLevel++;
+                    DrawCurveField("Star Emission", starEmissionCurveProp, controller.NormalizedTime);
+                    EditorGUI.indentLevel--;
+                }
+                //====Fog====
+                showFogSettings = EditorGUILayout.Foldout(showFogSettings, "Fog Settings", true);
+                if (showFogSettings)
+                {
+                    EditorGUI.indentLevel++;
+                    DrawCurveField("Fog Height", fogHeightCurveProp, controller.NormalizedTime);
+                    DrawCurveField("Fog Distance", fogDistanceCurveProp, controller.NormalizedTime);
+                    DrawGradientField("Fog Color", fogColorGradientProp, controller.NormalizedTime);
+                    EditorGUI.indentLevel--;
+                }
+                //====Exposure====
+                showExposureSettings = EditorGUILayout.Foldout(showExposureSettings, "Exposure Settings", true);
+                if (showExposureSettings)
+                {
+                    EditorGUI.indentLevel++;
+                    DrawCurveField("Exposure Compensation", exposureCompensationCurveProp, controller.NormalizedTime);
+                    EditorGUI.indentLevel--;
+                }
+#endif
+                //====Rain====
+                showRainySettings = EditorGUILayout.Foldout(showRainySettings, "Rainy Settings", true);
+                if (showRainySettings)
+                {
+                    EditorGUI.indentLevel++;
+                    SerializedProperty rainyEnable = presetSerializedObject.FindProperty("rainyEnable");
+                    EditorGUILayout.PropertyField(rainyEnable, new GUIContent("Enable Rainy"));
+                    DrawCurveField("Rainy Speed", rainySpeedCurveProp, controller.NormalizedTime);
+                    DrawCurveField("Rain Density", rainDensityCurveProp, controller.NormalizedTime);
+                    DrawCurveField("Rain WindZRotation", rainWindZRotationCurveProp, controller.NormalizedTime);
+                    EditorGUI.indentLevel--;
+                }
+
+                // 只保存预设数据，不污染场景物体
+                if (GUI.changed)
+                {
+                    presetSerializedObject.ApplyModifiedProperties();
+                    EditorUtility.SetDirty(preset);
+                    controller.Refresh();
+                    SceneView.RepaintAll();
+                }
+            }
+            else
+            {
+                EditorGUILayout.HelpBox("请设置 Active Preset 以查看预设信息", MessageType.Info);
+            }
+
+            serializedObject.ApplyModifiedProperties();
+
+            // 最小范围刷新
+            if (GUI.changed)
+            {
+                EditorUtility.SetDirty(controller);
+                controller.Refresh();
+                SceneView.RepaintAll();
+            }
+        }
+
+        private void DrawTimeSlider(DawnWeatherController controller)
+        {
+            float currentTime = timeOfDayProp.floatValue;
+            Rect sliderRect = EditorGUILayout.GetControlRect(GUILayout.Height(SLIDER_HEIGHT));
+            DrawDayNightGradient(sliderRect);
+
+            float handleWidth = 4f;
+            float normalizedTime = Mathf.Clamp01(currentTime / TIME_RANGE);
+            float handleX = Mathf.Lerp(sliderRect.x, sliderRect.xMax - handleWidth, normalizedTime);
+            Rect handleRect = new Rect(handleX, sliderRect.y, handleWidth, sliderRect.height);
+
+            Event e = Event.current;
+            int controlID = GUIUtility.GetControlID(s_SliderControlID, FocusType.Keyboard, sliderRect);
+
+            switch (e.GetTypeForControl(controlID))
+            {
+                case EventType.MouseDown:
+                    if (sliderRect.Contains(e.mousePosition))
+                    {
+                        GUIUtility.hotControl = controlID;
+                        SetTimeFromMousePosition(controller, sliderRect, e.mousePosition.x, handleWidth);
+                        GUI.changed = true;
+                        e.Use();
+                        Repaint();
+                    }
+                    break;
+
+                case EventType.MouseDrag:
+                    if (GUIUtility.hotControl == controlID)
+                    {
+                        SetTimeFromMousePosition(controller, sliderRect, e.mousePosition.x, handleWidth);
+                        GUI.changed = true;
+                        e.Use();
+                        Repaint();
+                        SceneView.RepaintAll();
+                    }
+                    break;
+
+                case EventType.MouseUp:
+                    if (GUIUtility.hotControl == controlID)
+                    {
+                        GUIUtility.hotControl = 0;
+                        e.Use();
+                    }
+                    break;
+            }
+
+            EditorGUI.DrawRect(handleRect, Color.white);
+            DrawTimeMarkers(sliderRect);
+
+            int hours = Mathf.FloorToInt(currentTime);
+            int minutes = Mathf.FloorToInt((currentTime - hours) * 60f);
+            string timeText = $"{hours:D2}:{minutes:D2}";
+
+            GUIStyle centerStyle = new GUIStyle(EditorStyles.boldLabel)
+            {
+                alignment = TextAnchor.MiddleCenter,
+                normal = { textColor = Color.cyan }
+            };
+
+            Rect textRect = new Rect(sliderRect.center.x - 30, sliderRect.yMax + 2, 60, 16);
+            GUI.Label(textRect, timeText, centerStyle);
+            EditorGUILayout.Space(18);
+        }
+
+        private void DrawDayNightGradient(Rect rect)
+        {
+            Color grayBackground = new Color(0.533f, 0.533f, 0.533f, 1f);
+            EditorGUI.DrawRect(rect, grayBackground);
+        }
+
+        private void DrawTimeMarkers(Rect sliderRect)
+        {
+            GUIStyle markerStyle = new GUIStyle(EditorStyles.miniLabel)
+            {
+                alignment = TextAnchor.UpperLeft,
+                normal = { textColor = new Color(1f, 1f, 1f, 0.5f) }
+            };
+
+            for (int hour = 0; hour <= 24; hour += 6)
+            {
+                float x = sliderRect.x + sliderRect.width * (hour / 24f);
+                Rect markerRect = new Rect(x - 10, sliderRect.y - 14, 20, 12);
+                GUI.Label(markerRect, hour.ToString(), markerStyle);
+            }
+        }
+
+        private void SetTimeFromMousePosition(DawnWeatherController controller, Rect sliderRect, float mouseX, float handleWidth)
+        {
+            float minX = sliderRect.x;
+            float maxX = sliderRect.xMax - handleWidth;
+            float clampedX = Mathf.Clamp(mouseX, minX, maxX);
+            float normalized = Mathf.InverseLerp(minX, maxX, clampedX);
+            float newTime = normalized * TIME_RANGE;
+
+            timeOfDayProp.floatValue = newTime;
+            serializedObject.ApplyModifiedPropertiesWithoutUndo();
+
+            controller.SetTime(newTime);
+            controller.Refresh();
+        }
+
+        private void DrawCurveField(string label, SerializedProperty curveProp, float normalizedTime)
+        {
+            if (curveProp == null) return;
+
+            EditorGUILayout.BeginHorizontal();
+            EditorGUILayout.LabelField(label, GUILayout.Width(100));
+
+            Rect curveRect = EditorGUILayout.GetControlRect(GUILayout.Height(CURVE_HEIGHT));
+            EditorGUI.PropertyField(curveRect, curveProp, GUIContent.none);
+
+            float x = curveRect.x + curveRect.width * normalizedTime;
+            EditorGUI.DrawRect(new Rect(x, curveRect.y, 1, curveRect.height), Color.red);
+
+            AnimationCurve curve = curveProp.animationCurveValue;
+            float value = curve.Evaluate(normalizedTime);
+            EditorGUILayout.LabelField(value.ToString("F1"), GUILayout.Width(60));
+
+            EditorGUILayout.EndHorizontal();
+        }
+
+        private void DrawGradientField(string label, SerializedProperty gradientProp, float normalizedTime)
+        {
+            if (gradientProp == null) return;
+
+            EditorGUILayout.BeginHorizontal();
+            EditorGUILayout.LabelField(label, GUILayout.Width(100));
+
+            Rect gradientRect = EditorGUILayout.GetControlRect(GUILayout.Height(20));
+            EditorGUI.PropertyField(gradientRect, gradientProp, GUIContent.none);
+
+            float x = gradientRect.x + gradientRect.width * normalizedTime;
+            EditorGUI.DrawRect(new Rect(x, gradientRect.y, 1, gradientRect.height), Color.red);
+
+            Gradient gradient = gradientProp.gradientValue;
+            Color currentColor = gradient.Evaluate(normalizedTime);
+            EditorGUI.DrawRect(EditorGUILayout.GetControlRect(GUILayout.Width(60), GUILayout.Height(20)), currentColor);
+
+            EditorGUILayout.EndHorizontal();
+        }
+
+        // ====================== 安全场景预览 ======================
+        private void OnSceneGUI()
+        {
+            DawnWeatherController controller = target as DawnWeatherController;
+            if (controller != null && controller.ActivePreset != null)
+            {
+                controller.Refresh();
+            }
+        }
+    }
+}

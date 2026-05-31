@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using UnityEngine;
 
-namespace NeuroTODEditor
+namespace DawnTODEditor
 {
     /// <summary>
     /// 视图级别枚举
@@ -21,6 +21,28 @@ namespace NeuroTODEditor
     {
         Keyframes = 0,  // 关键帧视图
         Curves          // 曲线视图
+    }
+    
+    /// <summary>
+    /// 曲线编辑
+    /// </summary>
+    public enum CurveEditMode
+    {
+        None,
+        ClickedKeyframe,
+        MovingKeyframe,
+        ClickedTangent,
+        ClickedCurve,
+    };
+
+    public enum GradientEditMode
+    {
+        None,
+        ClickedColorKey,
+        MovingColorKey,
+        ClickedAlphaKey,
+        MovingAlphaKey,
+        ClickedGradient
     }
 
     /// <summary>
@@ -51,7 +73,8 @@ namespace NeuroTODEditor
         Sun,
         Moon,
         SkyLight,
-        Fog
+        Fog,
+        Exposure
     }
 
     /// <summary>
@@ -87,7 +110,7 @@ namespace NeuroTODEditor
         public static bool operator ==(KeyframeHandle left, KeyframeHandle right) => left.Equals(right);
         public static bool operator !=(KeyframeHandle left, KeyframeHandle right) => !left.Equals(right);
     }
-
+    
     /// <summary>
     /// 轨道信息
     /// </summary>
@@ -101,8 +124,6 @@ namespace NeuroTODEditor
         public BuiltinType BuiltinType;
         public int Depth;
         public bool IsExpanded;
-        public bool IsVisible;
-        public bool IsLocked;
 
         // 曲线引用
         public AnimationCurve FloatCurve;
@@ -116,8 +137,6 @@ namespace NeuroTODEditor
         {
             ChildIndices = new List<int>();
             IsExpanded = true;
-            IsVisible = true;
-            IsLocked = false;
             ParentIndex = -1;
             Depth = 0;
         }
@@ -185,8 +204,19 @@ namespace NeuroTODEditor
         // 选中的轨道索引
         public HashSet<int> SelectedTrackIndices;
 
-        // 选中的关键帧
-        public HashSet<KeyframeHandle> SelectedKeyframes;
+        //是否正在拖拽关键帧
+        public bool IsDraggingKeyframe;
+
+        public bool IsDraggingColorKey;
+
+        //EditorMode = Curves下的编辑状态
+        public CurveEditMode CurrentCurveEditMode = CurveEditMode.None;
+
+        public GradientEditMode CurrentGradientEditMode = GradientEditMode.None;
+
+        // 当前选中的关键帧（track index + key index）
+        public (int trackIndex, int keyIndex)? SelectedKeyframe = null;
+        public (int trackIndex,int keyIndex,GradientKeyType gradientKeyType)? SelectedGradientKey { get; set; }
 
         public LightingEditorState()
         {
@@ -198,7 +228,6 @@ namespace NeuroTODEditor
             TimeDisplayMode = TimeDisplayMode.Format24H;
             Playback = new PlaybackData();
             SelectedTrackIndices = new HashSet<int>();
-            SelectedKeyframes = new HashSet<KeyframeHandle>();
         }
 
         /// <summary>

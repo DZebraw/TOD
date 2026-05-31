@@ -1,0 +1,23 @@
+{
+  "name": "com.tencent.dawn.tod",
+  "displayName": "DawnTOD",
+  "version": "1.0.0",
+  "unity": "2022.3",
+  "description": "A dynamic time-of-day system for Unity's render pipelines.",
+  "keywords": [
+    "time-of-day",
+    "lighting", 
+    "sun",
+    "sky",
+    "atmosphere",
+    "urp",
+    "hdrp"
+  ],
+  "author": {
+    "name": "Your Name",
+    "email": "you@example.com",
+    "url": "https://github.com/yourname"
+  },
+  "dependencies": {
+  }
+}
