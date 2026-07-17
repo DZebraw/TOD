@@ -54,6 +54,8 @@ namespace DawnTOD
         // ========== 雨天 ===========
         [Tooltip("雨天控制开关")]
         public bool rainyEnable = false;
+        [Tooltip("Continuous precipitation amount (0 = dry, 1 = full rain intensity). The value is ignored when Enable Rainy is off.")]
+        public AnimationCurve precipitationAmountCurve = CreateDefaultPrecipitationAmountCurve();
         public AnimationCurve rainySpeedCurve = CreateDefaultRainySpeedCurve();
         public AnimationCurve rainDensityCurve = CreateDefaultRainDensityCurve();
         public AnimationCurve rainWindZRotationCurve = CreateDefaultRainWindZRotationCurve();
@@ -258,6 +260,13 @@ namespace DawnTOD
             return new AnimationCurve(new Keyframe(0f, -2f),
                     new Keyframe(0.25f, 0f),new Keyframe(0.5f,0f),
                     new Keyframe(0.75f,0f),new Keyframe(1f,-2f));
+        }
+
+        private static AnimationCurve CreateDefaultPrecipitationAmountCurve()
+        {
+            // Keep existing rainy presets visually compatible: enabled rain defaults to 100%.
+            return new AnimationCurve(new Keyframe(0f, 1f),
+                                      new Keyframe(1f, 1f));
         }
 
         private static AnimationCurve CreateDefaultRainySpeedCurve()

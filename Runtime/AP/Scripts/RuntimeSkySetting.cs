@@ -2,6 +2,7 @@
 using System.Linq;
 using UnityEngine;
 
+using UnityEngine.Rendering;
 namespace DawnTOD
 {
     [ExecuteInEditMode]
@@ -25,6 +26,10 @@ namespace DawnTOD
         [ColorUsage(false, true)]
         public Color lightFromOuterSpace = Color.white;
 
+        [ColorUsage(false, true)]
+        [Tooltip("Color behind atmosphere rays that hit the planet surface. Black preserves the current lower-hemisphere appearance.")]
+        public Color atmosphereGroundColor = Color.black;
+
         public float planetRadius = 6357000.0f;
         public float atmosphereHeight = 12000f;
         public float surfaceHeight;
@@ -43,6 +48,8 @@ namespace DawnTOD
 
         [Header("Precomputation")]
         public ComputeShader computerShader;
+        private const string PrecomputationResourcePath = "Precomputation";
+        private bool m_LoggedMissingComputerShader;
 
         private Vector2Int integrateCPDensityLUTSize = new Vector2Int(512, 512);
         private Vector2Int sunOnSurfaceLUTSize = new Vector2Int(512, 512);
@@ -75,7 +82,8 @@ namespace DawnTOD
 
         private Texture2D m_SunOnSurfaceLUTReadToCPU;
         private Texture2D m_HemiSphereRandomNormlizedVecLUT;
-        private Texture2D m_AmbientLUTReadToCPU;
+        private bool m_AmbientReadbackPending;
+        private bool m_AmbientReadbackWarningLogged;
 
         private Camera m_Camera;
         private Vector3[] m_FrustumCorners = new Vector3[4];
@@ -110,6 +118,7 @@ namespace DawnTOD
             Shader.SetGlobalFloat(ScatteringKeys.kPlanetRadius, planetRadius);
             Shader.SetGlobalFloat(ScatteringKeys.kAtmosphereHeight, atmosphereHeight);
             Shader.SetGlobalFloat(ScatteringKeys.kSurfaceHeight, surfaceHeight);
+            Shader.SetGlobalColor(ScatteringKeys.kAtmosphereGroundColor, atmosphereGroundColor);
             Shader.SetGlobalVector(ScatteringKeys.kIncomingLight, lightFromOuterSpace);
             Shader.SetGlobalFloat(ScatteringKeys.kSunIntensity, sunDiskScale);
             Shader.SetGlobalFloat(ScatteringKeys.kSunMieG, sunMieG);
@@ -137,11 +146,18 @@ namespace DawnTOD
 
         private void PreComputeAll()
         {
-            if (computerShader == null)
+            if (!EnsureComputerShader())
             {
-                Debug.LogWarningFormat("Computer shader for precompute scattering lut is empty");
+                if (!m_LoggedMissingComputerShader)
+                {
+                    Debug.LogWarning("Precomputation.compute could not be loaded from Resources/Precomputation. Assign a ComputeShader in the Inspector or ensure the package resource is imported.", this);
+                    m_LoggedMissingComputerShader = true;
+                }
+
                 return;
             }
+
+            m_LoggedMissingComputerShader = false;
 
             SetCommonParams();
             ComputeIntegrateCPdensity();
@@ -245,21 +261,63 @@ namespace DawnTOD
 
         private void UpdateAmbient()
         {
-            if (m_AmbientLUTReadToCPU == null) m_AmbientLUTReadToCPU = new Texture2D(ambientLUTSize, 1, TextureFormat.RGB24, false, true);
-
-            ScatteringUtils.ReadRTpixelsBackToCPU(m_AmbientLUT, m_AmbientLUTReadToCPU);
+            if (m_AmbientLUT == null || !m_AmbientLUT.IsCreated() || m_AmbientReadbackPending)
+                return;
 
             FindAndSetDirectionalLight();
+            if (mainLight == null)
+                return;
+
+            if (!SystemInfo.supportsAsyncGPUReadback)
+            {
+                if (!m_AmbientReadbackWarningLogged)
+                {
+                    Debug.LogWarning("Async GPU readback is not supported; ambient lighting cannot be updated from the scattering LUT.", this);
+                    m_AmbientReadbackWarningLogged = true;
+                }
+                return;
+            }
 
             var lightDir = -mainLight.transform.forward;
-            var cosAngle01 = Vector3.Dot(Vector3.up, lightDir) * 0.5 + 0.5;
+            var cosAngle01 = Mathf.Clamp01(Vector3.Dot(Vector3.up, lightDir) * 0.5f + 0.5f);
+            m_AmbientReadbackPending = true;
 
-            var ambient = m_AmbientLUTReadToCPU.GetPixel((int) (cosAngle01 * m_AmbientLUTReadToCPU.width), 0);
+            if (!ScatteringUtils.RequestRTpixelsBackToCPU(
+                    m_AmbientLUT, TextureFormat.RGBA32,
+                    request => OnAmbientReadbackCompleted(request, cosAngle01)))
+            {
+                m_AmbientReadbackPending = false;
+            }
+        }
 
+        private void OnAmbientReadbackCompleted(AsyncGPUReadbackRequest request, float cosAngle01)
+        {
+            if (this == null)
+                return;
+
+            m_AmbientReadbackPending = false;
+            if (!isActiveAndEnabled || request.hasError)
+                return;
+
+            var pixels = request.GetData<Color32>();
+            if (pixels.Length == 0)
+                return;
+
+            var pixelIndex = Mathf.Clamp(Mathf.FloorToInt(cosAngle01 * pixels.Length), 0, pixels.Length - 1);
+            var ambient = (Color)pixels[pixelIndex];
             RenderSettings.ambientLight = ambient.gamma;
             m_AmbientColor = ambient;
         }
 
+
+        private bool EnsureComputerShader()
+        {
+            if (computerShader != null)
+                return true;
+
+            computerShader = Resources.Load<ComputeShader>(PrecomputationResourcePath);
+            return computerShader != null;
+        }
 
         private void Awake()
         {
@@ -267,31 +325,13 @@ namespace DawnTOD
             
             FindAndSetDirectionalLight();
             
-            if (computerShader == null)
-            {
-                var computeShaders = Resources.FindObjectsOfTypeAll<ComputeShader>();
-                foreach (var cs in computeShaders)
-                {
-                    if (cs.name == "Precomputation")
-                    {
-                        computerShader = cs;
-                        break;
-                    }
-                }
-                if (computerShader == null)
-                {
-                    computerShader = Resources.Load<ComputeShader>("Precomputation");
-                }
-                if (computerShader == null)
-                {
-                    Debug.LogWarning("Precomputation.compute shader not found. Please make sure the file exists in Resources folder or in the project.");
-                }
-                else
-                {
-                    Debug.Log("Precomputation compute shader automatically assigned: " + computerShader.name);
-                }
-            }
+            EnsureComputerShader();
             SetSkyboxMaterial();
+        }
+
+        private void OnEnable()
+        {
+            EnsureComputerShader();
         }
 
         private void SetSkyboxMaterial()

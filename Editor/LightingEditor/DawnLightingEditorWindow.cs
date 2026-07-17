@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using UnityEngine;
 using UnityEditor;
 using DawnTOD;
+using DawnTODEditor.AI;
 
 namespace DawnTODEditor
 {
@@ -13,11 +14,14 @@ namespace DawnTODEditor
         // ========== 常量 ==========
         private const float MIN_OUTLINER_WIDTH = 150f;
         private const float SCROLLBAR_WIDTH = 16f;
+        private const float MAIN_AREA_TOP =
+            LightingEditorConstants.TOOLBAR_HEIGHT + 4f;
 
         // ========== 状态数据 ==========
         private LightingEditorState _state;
 
         private TrackManager _trackManager;
+        private DawnTodAiPanel _aiPanel;
 
         // ========== 目标引用 ==========
         private DawnWeatherController _selectedController;
@@ -95,6 +99,14 @@ namespace DawnTODEditor
                 Repaint();
             }, MIN_OUTLINER_WIDTH);
 
+            DawnTodAiServiceManager aiService = DawnTodAiServiceManager.Shared;
+            _aiPanel = new DawnTodAiPanel(
+                aiService,
+                new DawnTodAiRequestCoordinator(
+                    aiService,
+                    new DawnTodAiMainThreadDispatcher()),
+                Repaint);
+
             LoadViewLevelFromPrefs();
             RefreshControllerList();
             EditorApplication.update += OnEditorUpdate;
@@ -113,6 +125,8 @@ namespace DawnTODEditor
             _trackOutlinerDrawer?.Dispose();
             _splitterDrawer?.Dispose();
             _modeTabDrawer?.Dispose();
+            _aiPanel?.Dispose();
+            _aiPanel = null;
 
             SaveViewLevelToPrefs();
         }
@@ -125,6 +139,11 @@ namespace DawnTODEditor
 
         private void OnSelectionChanged()
         {
+            if (_aiPanel?.HasActiveRequest == true)
+            {
+                return;
+            }
+
             // 检查选中的对象是否包含TODController
             var go = Selection.activeGameObject;
             if (go != null)
@@ -139,6 +158,9 @@ namespace DawnTODEditor
 
         private void OnEditorUpdate()//每帧更新编辑器画面
         {
+            SynchronizeHierarchySelection();
+            SynchronizeActivePreset();
+
             if (_state.Playback.State == PlaybackState.PlayingForward || _state.Playback.State == PlaybackState.PlayingBackward)
             {
                 float deltaTime = Time.realtimeSinceStartup - lastUpdateTime;
@@ -209,9 +231,17 @@ namespace DawnTODEditor
                 EditorGUILayout.Space(1);
                 EditorDrawingUtility.DrawHorizontalLine();
 
-                if (_state.CurrentViewLevel == ViewLevel.Level3_CurveEditor)
+                if (_state.CurrentViewLevel == ViewLevel.Level1_Playback)
+                {
+                    DrawAiAssistantArea();
+                }
+                else if (_state.CurrentViewLevel == ViewLevel.Level3_CurveEditor)
                 {
                     DrawMainEditorArea();
+                }
+                else
+                {
+                    DrawEmptyMainArea();
                 }
 
                 // 保存当前事件状态，避免曲线区域的事件处理影响 PlaybackBar
@@ -234,9 +264,27 @@ namespace DawnTODEditor
         }
 
         // ========== 主编辑区域 ==========
+        private void DrawAiAssistantArea()
+        {
+            Rect mainRect = ReserveMainAreaRect();
+            float capturedHour = Mathf.Repeat(_state.CurrentTime * 24f, 24f);
+            _aiPanel?.Draw(
+                mainRect,
+                _selectedController,
+                capturedHour,
+                OnControllerSelected,
+                PauseForAiRequest,
+                OnAiPatchApplied);
+        }
+
+        private void DrawEmptyMainArea()
+        {
+            ReserveMainAreaRect();
+        }
+
         private void DrawMainEditorArea()
         {
-            Rect mainRect = EditorGUILayout.GetControlRect(false, position.height - LightingEditorConstants.TOOLBAR_HEIGHT - LightingEditorConstants.PLAYBACK_BAR_HEIGHT - 10);
+            Rect mainRect = ReserveMainAreaRect();
 
             // 左侧：轨道 Outliner
             Rect outlinerRect = new Rect(mainRect.x, mainRect.y, _outlinerWidth, mainRect.height);
@@ -251,6 +299,46 @@ namespace DawnTODEditor
             DrawTrackOutliner(outlinerRect);
             DrawSplitter(splitterRect);
             DrawTrackArea(trackAreaRect);
+        }
+
+        private Rect ReserveMainAreaRect()
+        {
+            float height = CalculateMainAreaHeight(position.height);
+            Rect reservedRect = EditorGUILayout.GetControlRect(
+                false,
+                height,
+                GUILayout.ExpandWidth(true));
+            return ResolveMainAreaRect(
+                reservedRect,
+                position.size,
+                Event.current.type);
+        }
+
+        internal static Rect ResolveMainAreaRect(
+            Rect reservedRect,
+            Vector2 windowSize,
+            EventType eventType)
+        {
+            if (eventType != EventType.Layout)
+            {
+                return reservedRect;
+            }
+
+            return new Rect(
+                0f,
+                MAIN_AREA_TOP,
+                Mathf.Max(0f, windowSize.x),
+                CalculateMainAreaHeight(windowSize.y));
+        }
+
+        private static float CalculateMainAreaHeight(float windowHeight)
+        {
+            return Mathf.Max(
+                1f,
+                windowHeight -
+                LightingEditorConstants.TOOLBAR_HEIGHT -
+                LightingEditorConstants.PLAYBACK_BAR_HEIGHT -
+                10f);
         }
 
         #region 主编辑绘制区域
@@ -478,11 +566,26 @@ namespace DawnTODEditor
         #region Controller组件管理
         private void RefreshControllerList()
         {
-            var controllers = FindObjectsOfType<DawnWeatherController>();
-            if (controllers.Length > 0) 
-            { 
-                SetSelectedController(controllers[0]);
+            DawnWeatherController hierarchyController =
+                Selection.activeGameObject != null
+                    ? Selection.activeGameObject.GetComponent<DawnWeatherController>()
+                    : null;
+            if (hierarchyController != null)
+            {
+                SetSelectedController(hierarchyController);
+                return;
             }
+
+            DawnWeatherController[] controllers =
+                FindObjectsOfType<DawnWeatherController>(true);
+            if (_selectedController != null &&
+                System.Array.IndexOf(controllers, _selectedController) >= 0)
+            {
+                SetSelectedController(_selectedController);
+                return;
+            }
+
+            SetSelectedController(controllers.Length > 0 ? controllers[0] : null);
         }
 
         private void SetSelectedController(DawnWeatherController controller)
@@ -523,6 +626,11 @@ namespace DawnTODEditor
         /// </summary>
         private void OnControllerSelected(DawnWeatherController controller)
         {
+            if (_aiPanel?.HasActiveRequest == true)
+            {
+                return;
+            }
+
             SetSelectedController(controller);
         }
 
@@ -540,6 +648,12 @@ namespace DawnTODEditor
         /// </summary>
         private void OnViewLevelChanged(ViewLevel level)
         {
+            if (_aiPanel?.HasActiveRequest == true &&
+                _state.CurrentViewLevel == ViewLevel.Level1_Playback)
+            {
+                return;
+            }
+
             SetViewLevel(level);
         }
 
@@ -553,6 +667,76 @@ namespace DawnTODEditor
                 : TimeDisplayMode.Format24H;
         }
         
+        #endregion
+
+        #region AI Assistant
+
+        private void PauseForAiRequest()
+        {
+            _state.Playback.State = PlaybackState.Stopped;
+            lastUpdateTime = Time.realtimeSinceStartup;
+            Repaint();
+        }
+
+        private void OnAiPatchApplied(DawnTodAiAnalyzeResult result)
+        {
+            WeatherIntentApplyResult applyResult = result.ApplyResult;
+            if (applyResult == null || !applyResult.DidApply)
+            {
+                return;
+            }
+
+            _state.Playback.State = PlaybackState.Stopped;
+            _state.CurrentTime = Mathf.Repeat(applyResult.TargetHour, 24f) / 24f;
+            _activePreset = _selectedController != null
+                ? _selectedController.ActivePreset
+                : null;
+            UpdateActivePresetReferences();
+            _selectedController?.Refresh();
+            RefreshTracks();
+            SceneView.RepaintAll();
+            Repaint();
+        }
+
+        private void SynchronizeHierarchySelection()
+        {
+            if (_aiPanel?.HasActiveRequest == true || Selection.activeGameObject == null)
+            {
+                return;
+            }
+
+            DawnWeatherController hierarchyController =
+                Selection.activeGameObject.GetComponent<DawnWeatherController>();
+            if (hierarchyController != null && hierarchyController != _selectedController)
+            {
+                SetSelectedController(hierarchyController);
+            }
+        }
+
+        private void SynchronizeActivePreset()
+        {
+            if (_aiPanel?.HasActiveRequest == true || _selectedController == null)
+            {
+                return;
+            }
+
+            if (_activePreset != _selectedController.ActivePreset)
+            {
+                _activePreset = _selectedController.ActivePreset;
+                UpdateActivePresetReferences();
+                RefreshTracks();
+                Repaint();
+            }
+        }
+
+        private void UpdateActivePresetReferences()
+        {
+            _curveInteractionHandler.UpdateActivePreset(_activePreset);
+            _gradientInteractionHandler.UpdateActivePreset(_activePreset);
+            _keyframeValueEditorDrawer.UpdateActivePreset(_activePreset);
+            _colorKeyValueEditorDrawer.UpdateActivePreset(_activePreset);
+        }
+
         #endregion
 
         #region playbackBar回调
@@ -649,6 +833,12 @@ namespace DawnTODEditor
         #region 事件处理
         private void HandleEvents()
         {
+            if (Event.current.type == EventType.KeyDown &&
+                EditorGUIUtility.editingTextField)
+            {
+                return;
+            }
+
             // Tab 键切换模式
             if (Event.current.type == EventType.KeyDown && Event.current.keyCode == KeyCode.Tab)
             {

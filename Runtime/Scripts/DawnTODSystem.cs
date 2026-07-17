@@ -1,12 +1,11 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using UnityEngine;
 using UnityEngine.Rendering;
+using UnityEngine.Serialization;
 #if USING_HDRP
 using UnityEngine.Rendering.HighDefinition;
 #endif
-using UnityEngine.SocialPlatforms;
 
 namespace DawnTOD
 {
@@ -30,12 +29,31 @@ namespace DawnTOD
         }
 
         // ========== 天气混合相关 ==========
-        // 收集场景中的所有WeatherController
+        // 运行时派生缓存，不再作为第二份序列化事实来源。
+        [NonSerialized]
         public List<DawnWeatherController> weatherControllers = new List<DawnWeatherController>();
-        // 存储「WeatherController-WeatherPreset-生效时间段」
+        // 保留旧容器名称以兼容已有 Scene/Prefab；条目已升级为 Schedule Entry 语义。
         public List<WeatherControllerTimeRange> controllerTimeRanges = new List<WeatherControllerTimeRange>();
-        // 混合结果缓存
-        private MixedWeatherResult mixedResult = new MixedWeatherResult();
+        [SerializeField] private DawnWeatherPreset fallbackPreset;
+        [SerializeField] private int scheduleSchemaVersion;
+
+        public const int CurrentScheduleSchemaVersion = 1;
+
+        private readonly List<WeatherScheduleWindow> scheduleWindowBuffer =
+            new List<WeatherScheduleWindow>();
+        private readonly List<DawnWeatherPreset> presetBuffer =
+            new List<DawnWeatherPreset>();
+        private readonly List<WeatherWeightContribution> weightContributionBuffer =
+            new List<WeatherWeightContribution>();
+        private readonly List<WeatherSampleContribution> sampleContributionBuffer =
+            new List<WeatherSampleContribution>();
+        private WeatherBlendResult mixedResult;
+        private bool hasMixedResult;
+        private double nextFallbackWarningTime;
+        private double nextRainOutputWarningTime;
+
+        private const double FallbackWarningIntervalSeconds = 5d;
+        private const double RainOutputWarningIntervalSeconds = 5d;
 
         // ========== 时间控制 ==========
         [SerializeField] private float sunriseTime = 6f;
@@ -66,6 +84,18 @@ namespace DawnTOD
         [Tooltip("月亮方向光")]
         [SerializeField]
         public Light moonLight;
+
+        [Header("Precipitation Output")]
+        [Tooltip("Scene rain output controlled by the blended precipitation result.")]
+        [SerializeField] private DawnGPUParticleSystem rainParticleSystem;
+
+        [Header("Celestial Light Shadows")]
+        [Min(0f)]
+        [Tooltip("Minimum light intensity required before a celestial light may start casting shadows.")]
+        [SerializeField] private float shadowEnableIntensity = 0.05f;
+        [Min(0f)]
+        [Tooltip("Intensity margin used for shadow disable and dominant-light switching hysteresis.")]
+        [SerializeField] private float shadowHysteresis = 0.01f;
         // ========== HDRP Volume ==========
 #if USING_HDRP
         [Tooltip("HDRP Volume")]
@@ -84,26 +114,76 @@ namespace DawnTOD
 #endif
 
         private bool isNight = false;
-        private bool wasNight = false;
+        private Light shadowOwner;
+        [NonSerialized] private DawnGPUParticleSystem resolvedLegacyRainParticleSystem;
+        [NonSerialized] private bool rainOutputResolutionAttempted;
 
         public float SunRaiseTime => sunriseTime;
         public float SunSetTime => sunsetTime;
         public float NormalizedTime => GetNormalizedTime();
         public bool IsNight => isNight;
+        public DawnGPUParticleSystem RainParticleSystem
+        {
+            get => rainParticleSystem;
+            set
+            {
+                rainParticleSystem = value;
+                resolvedLegacyRainParticleSystem = value;
+                rainOutputResolutionAttempted = value != null;
+                nextRainOutputWarningTime = 0d;
+            }
+        }
+        public float ShadowEnableIntensity
+        {
+            get => shadowEnableIntensity;
+            set
+            {
+                shadowEnableIntensity = Mathf.Max(0f, value);
+                shadowHysteresis = Mathf.Clamp(
+                    shadowHysteresis,
+                    0f,
+                    shadowEnableIntensity);
+            }
+        }
+        public float ShadowHysteresis
+        {
+            get => shadowHysteresis;
+            set => shadowHysteresis = Mathf.Clamp(value, 0f, shadowEnableIntensity);
+        }
+        public DawnWeatherPreset FallbackPreset
+        {
+            get => fallbackPreset;
+            set => fallbackPreset = value;
+        }
+        public int ScheduleSchemaVersion => scheduleSchemaVersion;
+        public bool NeedsScheduleMigration =>
+            scheduleSchemaVersion < CurrentScheduleSchemaVersion;
         public bool AutoAdvanceTime
         {
             get => autoAdvanceTime;
-            set => autoAdvanceTime = value;
+            set
+            {
+                autoAdvanceTime = value;
+                SyncTimeManagerSettings();
+            }
         }
         public float DayLengthInSeconds
         {
             get => dayLengthInSeconds;
-            set => dayLengthInSeconds = Mathf.Max(1f, value);
+            set
+            {
+                dayLengthInSeconds = Mathf.Max(1f, value);
+                SyncTimeManagerSettings();
+            }
         }
         public float TimeScale
         {
             get => timeScale;
-            set => timeScale = value;
+            set
+            {
+                timeScale = value;
+                SyncTimeManagerSettings();
+            }
         }
         public float TimeOfDay
         {
@@ -113,87 +193,36 @@ namespace DawnTOD
 
         #region 辅助类
         [Serializable]
-        public class WeatherControllerTimeRange
+        public class WeatherControllerTimeRange : WeatherScheduleEntry
         {
-            public DawnWeatherController controller;
-            public DawnWeatherPreset preset;
-            public float startHour = 0f;
-            public float endHour = 24f;
+            [SerializeField]
+            [HideInInspector]
+            [FormerlySerializedAs("preset")]
+            private DawnWeatherPreset legacyPreset;
 
-            public bool IsActiveAt(float currentHour)
+            // 源码兼容入口；当前评估始终读取 controller.ActivePreset。
+            public DawnWeatherPreset preset
             {
-                currentHour = Mathf.Repeat(currentHour, 24f);
-                startHour = Mathf.Clamp(startHour, 0f, 24f);
-                endHour = Mathf.Clamp(endHour, 0f, 24f);
-
-                if (Mathf.Approximately(startHour, 0f) && Mathf.Approximately(endHour, 24f))
-                {
-                    return true;
-                }
-
-                if (startHour < endHour)
-                {
-                    return currentHour >= startHour && currentHour < endHour;
-                }
-                else
-                {
-                    return currentHour >= startHour || currentHour < endHour;
-                }
+                get => legacyPreset;
+                set => legacyPreset = value;
             }
 
             public float GetSmoothWeightAt(float currentHour)
             {
-                return IsActiveAt(currentHour) ? 1f : 0f;
+                return GetRawWeightAt(currentHour);
             }
-        }
 
-        // ========== 辅助类：存储混合后的最终结果 ==========
-        private class MixedWeatherResult
-        {
-            // 太阳相关
-            public Vector3 sunDir;
-            public float sunIntensity;
-            public Color sunColor;
-            // 月亮相关
-            public Vector3 moonDir;
-            public float moonIntensity;
-            public Color moonColor;
-            // 天空/雾相关
-            public float starEmission;
-            public float fogDistance;
-            public float fogHeight;
-            public Color fogColor;
-            //曝光相关
-            public float exposureCompensation;
-            //雨天相关
-            public float rainySpeed;
-            public float rainDensity;
-            public float rainWindZRotation;
-            public bool hasRain;
-
-            // 重置混合结果
-            public void Reset()
-            {
-                sunDir = Vector3.zero;
-                sunIntensity = 0f;
-                sunColor = Color.black;
-                moonDir = Vector3.zero;
-                moonIntensity = 0f;
-                moonColor = Color.black;
-                starEmission = 0f;
-                fogDistance = 0f;
-                fogHeight = 0f;
-                fogColor = Color.black;
-                exposureCompensation = 0f;
-                rainySpeed = 0f;
-                rainDensity = 0f;
-                rainWindZRotation = 0f;
-                hasRain = false;
-            }
+            internal DawnWeatherPreset LegacyPreset => legacyPreset;
+            internal void ClearLegacyPreset() => legacyPreset = null;
         }
         #endregion
 
         #region 生命周期
+        private void Reset()
+        {
+            scheduleSchemaVersion = CurrentScheduleSchemaVersion;
+        }
+
         private void Awake()
         {
             if (_instance == null)
@@ -210,6 +239,7 @@ namespace DawnTOD
             }
 
             InitializeTimeManager();
+            RebuildControllerCacheFromSchedule();
             //TODEvents.OnSunrise += () => Debug.Log($"Time {TimeOfDay}: 日出");
         }
 
@@ -219,14 +249,8 @@ namespace DawnTOD
             CacheVolumeComponents();
 #endif
 
-            // 1. 自动收集场景中所有的WeatherController
-            CollectAllWeatherControllers();
-
-            // 2. 增量同步控制器和时间段
-            SyncControllerTimeRanges();
-
-            // 3. 初始化混合结果并更新系统
-            mixedResult.Reset();
+            // 调度列表是唯一序列化来源；场景扫描只由显式 Rescan 触发。
+            RebuildControllerCacheFromSchedule();
             UpdateWeatherBlendingSystem();
         }
 
@@ -235,7 +259,6 @@ namespace DawnTOD
             if (Application.isPlaying && autoAdvanceTime)
             {
                 AdvanceTime(Time.deltaTime);
-                UpdateWeatherBlendingSystem();
             }
         }
 
@@ -244,233 +267,432 @@ namespace DawnTOD
 #if USING_HDRP
             CacheVolumeComponents();
 #endif
-            CollectAllWeatherControllers();
-            SyncControllerTimeRanges();
-            mixedResult.Reset();
+            shadowEnableIntensity = Mathf.Max(0f, shadowEnableIntensity);
+            shadowHysteresis = Mathf.Clamp(
+                shadowHysteresis,
+                0f,
+                shadowEnableIntensity);
+            resolvedLegacyRainParticleSystem = rainParticleSystem;
+            rainOutputResolutionAttempted = rainParticleSystem != null;
+            nextRainOutputWarningTime = 0d;
+            if (!NeedsScheduleMigration)
+            {
+                SanitizeScheduleEntries();
+            }
+            SyncTimeManagerSettings();
+            RebuildControllerCacheFromSchedule();
             UpdateWeatherBlendingSystem();
 
             if (Application.isPlaying && autoAdvanceTime)
             {
                 AdvanceTime(Time.deltaTime);
-                UpdateWeatherBlendingSystem();
+            }
+        }
+
+        private void OnDestroy()
+        {
+            UnsubscribeTimeManager();
+            if (_instance == this)
+            {
+                _instance = null;
             }
         }
         #endregion
 
         #region 核心：天气混合相关方法（编辑器面板配置驱动）
-        /// <summary>
-        /// 自动收集场景中所有启用的WeatherController
-        /// </summary>
-        private void CollectAllWeatherControllers()
+        public void RegisterController(DawnWeatherController controller)
         {
-            weatherControllers.Clear();
-            DawnWeatherController[] allControllers = FindObjectsOfType<DawnWeatherController>(true); //查找所有激活/未激活的对象
-            foreach (var controller in allControllers)
+            if (controller == null)
             {
-                if (controller != null && controller.ActivePreset != null)
-                {
-                    weatherControllers.Add(controller);
-                    //Debug.Log($"收集到WeatherController：{controller.gameObject.name}，对应的Preset：{controller.ActivePreset.name}");
-                }
+                return;
             }
+
+            weatherControllers ??= new List<DawnWeatherController>();
+            if (!weatherControllers.Contains(controller))
+            {
+                weatherControllers.Add(controller);
+            }
+
+            RefreshWeatherBlendingSystem();
         }
 
-        /// <summary>
-        /// 增量同步WeatherController和controllerTimeRanges
-        /// </summary>
-        private void SyncControllerTimeRanges()
+        public void UnregisterController(DawnWeatherController controller)
         {
-            if (weatherControllers == null || controllerTimeRanges == null) return;
-
-            HashSet<DawnWeatherController> existingControllers = new HashSet<DawnWeatherController>();
-            foreach (var range in controllerTimeRanges)
+            if (controller == null || weatherControllers == null)
             {
-                if (range.controller != null)
-                {
-                    existingControllers.Add(range.controller);
-                }
+                return;
             }
 
-            foreach (var controller in weatherControllers)
-            {
-                if (controller == null || controller.ActivePreset == null) continue;
+            weatherControllers.Remove(controller);
+            RefreshWeatherBlendingSystem();
+        }
 
-                if (!existingControllers.Contains(controller))
+        public int RescanControllers(bool addMissingFullDaySchedules = false)
+        {
+            DawnWeatherController[] found =
+                FindObjectsOfType<DawnWeatherController>(true);
+            Array.Sort(found, CompareControllersByInstanceId);
+
+            weatherControllers ??= new List<DawnWeatherController>();
+            weatherControllers.Clear();
+            for (int index = 0; index < found.Length; index++)
+            {
+                DawnWeatherController controller = found[index];
+                if (controller == null)
+                {
+                    continue;
+                }
+
+                weatherControllers.Add(controller);
+                if (addMissingFullDaySchedules && !HasScheduleFor(controller))
                 {
                     controllerTimeRanges.Add(new WeatherControllerTimeRange
                     {
                         controller = controller,
-                        preset = controller.ActivePreset,
+                        enabled = true,
+                        fullDay = true,
                         startHour = 0f,
                         endHour = 24f
                     });
-                    existingControllers.Add(controller);
                 }
             }
 
-            // 清理无效配置
-            List<WeatherControllerTimeRange> invalidRanges = new List<WeatherControllerTimeRange>();
-            foreach (var range in controllerTimeRanges)
+            RefreshWeatherBlendingSystem();
+            return found.Length;
+        }
+
+        public bool HasScheduleFor(DawnWeatherController controller)
+        {
+            if (controller == null || controllerTimeRanges == null)
             {
-                if (range.controller == null)
+                return false;
+            }
+
+            for (int index = 0; index < controllerTimeRanges.Count; index++)
+            {
+                WeatherControllerTimeRange entry = controllerTimeRanges[index];
+                if (entry != null && entry.controller == controller)
                 {
-                    invalidRanges.Add(range);
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        public void GetCurrentContributions(List<WeatherContributionInfo> output)
+        {
+            if (output == null)
+            {
+                throw new ArgumentNullException(nameof(output));
+            }
+
+            output.Clear();
+            for (int index = 0; index < weightContributionBuffer.Count; index++)
+            {
+                WeatherWeightContribution contribution =
+                    weightContributionBuffer[index];
+                if (contribution.IsFallback)
+                {
+                    output.Add(new WeatherContributionInfo(
+                        WeatherWeightContribution.FallbackSourceIndex,
+                        null,
+                        fallbackPreset,
+                        contribution.RawWeight,
+                        contribution.NormalizedWeight,
+                        true));
                     continue;
                 }
 
-                // 检查Controller是否仍在有效列表中
-                bool controllerIsStillValid = weatherControllers.Contains(range.controller);
-                if (!controllerIsStillValid)
-                {
-                    invalidRanges.Add(range);
-                }
-                // 同步Preset（防止Controller切换Preset后配置不更新）
-                else if (range.preset != range.controller.ActivePreset)
-                {
-                    range.preset = range.controller.ActivePreset;
-                }
-            }
-
-            // 移除无效配置
-            foreach (var invalidRange in invalidRanges)
-            {
-                controllerTimeRanges.Remove(invalidRange);
+                int scheduleIndex = contribution.SourceIndex;
+                WeatherControllerTimeRange entry =
+                    scheduleIndex >= 0 &&
+                    scheduleIndex < controllerTimeRanges.Count
+                        ? controllerTimeRanges[scheduleIndex]
+                        : null;
+                DawnWeatherController controller = entry?.controller;
+                output.Add(new WeatherContributionInfo(
+                    scheduleIndex,
+                    controller,
+                    controller != null ? controller.ActivePreset : null,
+                    contribution.RawWeight,
+                    contribution.NormalizedWeight,
+                    false));
             }
         }
 
-        /// <summary>
-        /// 查询当前时间下的所有有效预设并计算权重
-        /// </summary>
-        private List<(DawnWeatherPreset preset, float weight)> GetActivePresetsAtCurrentTime()
+        internal void MigrateLegacyScheduleData()
         {
-            var currentHour = Mathf.Repeat(timeOfDay, 24f);
-            var activeRanges = controllerTimeRanges
-                .Where(r => r.controller != null && r.preset != null && r.IsActiveAt(currentHour))
-                .ToList();
-
-            if (activeRanges.Count == 0)
-                return new List<(DawnWeatherPreset, float)>();
-
-            if (activeRanges.Count == 1)
-                return new List<(DawnWeatherPreset, float)> { (activeRanges[0].preset, 1f) };
-
-            if (activeRanges.Count == 2)
+            if (!NeedsScheduleMigration)
             {
-                var r1 = activeRanges[0];
-                var r2 = activeRanges[1];
-
-                if (r1.startHour > r2.startHour)
-                {
-                    var tmp = r1;
-                    r1 = r2;
-                    r2 = tmp;
-                }
-
-                // 计算重叠区间
-                float overlapStart = Mathf.Max(r1.startHour, r2.startHour);
-                float overlapEnd = Mathf.Min(r1.endHour, r2.endHour);
-
-                if (overlapStart >= overlapEnd)
-                {
-                    return new List<(DawnWeatherPreset, float)>
-                    {
-                        (r1.preset, 0.5f),
-                        (r2.preset, 0.5f)
-                    };
-                }
-
-                if (currentHour >= overlapStart && currentHour <= overlapEnd)
-                {
-                    float t = Mathf.InverseLerp(overlapStart, overlapEnd, currentHour);
-                    return new List<(DawnWeatherPreset, float)>
-                    {
-                        (r1.preset, 1f - t),
-                        (r2.preset, t)
-                    };
-                }
-                else
-                {
-                    //跨天情况,回退到平均
-                    return new List<(DawnWeatherPreset, float)>
-                    {
-                        (r1.preset, 0.5f),
-                        (r2.preset, 0.5f)
-                    };
-                }
+                return;
             }
 
-            float equalWeight = 1f / activeRanges.Count;
-            return activeRanges.Select(r => (r.preset, equalWeight)).ToList();
+            controllerTimeRanges ??= new List<WeatherControllerTimeRange>();
+            for (int index = 0; index < controllerTimeRanges.Count; index++)
+            {
+                WeatherControllerTimeRange entry = controllerTimeRanges[index];
+                if (entry == null)
+                {
+                    continue;
+                }
+
+                entry.enabled = true;
+                entry.fullDay = Mathf.Approximately(entry.startHour, 0f) &&
+                                Mathf.Approximately(entry.endHour, 24f);
+                entry.blendInHours = 0f;
+                entry.blendOutHours = 0f;
+                entry.easing = null;
+            }
+
+            InferSimpleLegacyOverlaps();
+            for (int index = 0; index < controllerTimeRanges.Count; index++)
+            {
+                WeatherControllerTimeRange entry = controllerTimeRanges[index];
+                if (entry == null)
+                {
+                    continue;
+                }
+
+                entry.Sanitize();
+                entry.ClearLegacyPreset();
+            }
+
+            scheduleSchemaVersion = CurrentScheduleSchemaVersion;
+            RebuildControllerCacheFromSchedule();
+            RefreshWeatherBlendingSystem();
         }
 
-        /// <summary>
-        /// 核心：混合多个有效预设的属性值
-        /// </summary>
-        private void BlendActivePresets()
+        internal void SetScheduleSchemaVersionForTests(int version)
         {
-            mixedResult.Reset();
+            scheduleSchemaVersion = version;
+        }
 
-            // 获取当前有效预设（带归一化权重，由面板时间段配置决定）
-            List<(DawnWeatherPreset preset, float weight)> activePresets = GetActivePresetsAtCurrentTime();
-            if (activePresets.Count == 0) return;
+        private static int CompareControllersByInstanceId(
+            DawnWeatherController left,
+            DawnWeatherController right)
+        {
+            if (ReferenceEquals(left, right)) return 0;
+            if (left == null) return 1;
+            if (right == null) return -1;
+            return left.GetInstanceID().CompareTo(right.GetInstanceID());
+        }
 
-            float normalizedTime = GetNormalizedTime();
-            bool anyRainEnabled = false; 
-
-            foreach (var (preset, weight) in activePresets)
+        private void RebuildControllerCacheFromSchedule()
+        {
+            weatherControllers ??= new List<DawnWeatherController>();
+            weatherControllers.Clear();
+            if (controllerTimeRanges == null)
             {
-                if (preset == null) continue;
+                return;
+            }
 
-                // ========== 太阳属性混合 ==========
-                Quaternion sunRot = preset.SampleSunRotation(normalizedTime);
-                Vector3 sunForward = sunRot * Vector3.forward;
-                float sunInt = preset.sunIntensityCurve.Evaluate(normalizedTime);
-                Color sunCol = preset.sunColorGradient.Evaluate(normalizedTime);
-
-                mixedResult.sunDir += sunForward * weight;
-                mixedResult.sunIntensity += sunInt * weight;
-                mixedResult.sunColor += sunCol * weight;
-
-                // ========== 月亮属性混合 ==========
-                Quaternion moonRot = preset.SampleMoonRotation(normalizedTime);
-                Vector3 moonForward = moonRot * Vector3.forward;
-                float moonInt = preset.moonIntensityCurve.Evaluate(normalizedTime);
-                Color moonCol = preset.moonColorGradient.Evaluate(normalizedTime);
-
-                mixedResult.moonDir += moonForward * weight;
-                mixedResult.moonIntensity += moonInt * weight;
-                mixedResult.moonColor += moonCol * weight;
-
-                // ========== 天空/雾属性混合 ==========
-                float starEm = preset.starEmissionCurve.Evaluate(normalizedTime);
-                float fogDist = preset.fogDistanceCurve.Evaluate(normalizedTime);
-                float fogH = preset.fogHeightCurve.Evaluate(normalizedTime);
-                Color fogCol = preset.fogColorGradient.Evaluate(normalizedTime);
-
-                mixedResult.starEmission += starEm * weight;
-                mixedResult.fogDistance += fogDist * weight;
-                mixedResult.fogHeight += fogH * weight;
-                mixedResult.fogColor += fogCol * weight;
-
-                // ========== 曝光补偿混合 ==========
-                float exposureExpensation = preset.exposureCompensationCurve.Evaluate(normalizedTime);
-                mixedResult.exposureCompensation += exposureExpensation * weight;
-
-                // ========== 雨天参数混合==========
-                if (preset.rainyEnable)
+            for (int index = 0; index < controllerTimeRanges.Count; index++)
+            {
+                DawnWeatherController controller = controllerTimeRanges[index]?.controller;
+                if (controller != null && !weatherControllers.Contains(controller))
                 {
-                    anyRainEnabled = true;
-                    float currentRainSpeed = preset.rainySpeedCurve?.Evaluate(normalizedTime) ?? 1.0f;
-                    float currentRainDensity = preset.rainDensityCurve?.Evaluate(normalizedTime) ?? 1.0f;
-                    float currentRainWindZRotation = preset.rainWindZRotationCurve?.Evaluate(normalizedTime) ?? 0.0f;
-                    
-                    mixedResult.rainySpeed += currentRainSpeed * weight;
-                    mixedResult.rainDensity += currentRainDensity * weight;
-                    mixedResult.rainWindZRotation += currentRainWindZRotation * weight;
+                    weatherControllers.Add(controller);
                 }
             }
-            mixedResult.hasRain = anyRainEnabled;
-            mixedResult.rainWindZRotation = Mathf.Clamp(mixedResult.rainWindZRotation, -45f, 45f);
+        }
+
+        private void SanitizeScheduleEntries()
+        {
+            if (controllerTimeRanges == null)
+            {
+                return;
+            }
+
+            for (int index = 0; index < controllerTimeRanges.Count; index++)
+            {
+                controllerTimeRanges[index]?.Sanitize();
+            }
+        }
+
+        private void InferSimpleLegacyOverlaps()
+        {
+            for (int firstIndex = 0;
+                 firstIndex < controllerTimeRanges.Count;
+                 firstIndex++)
+            {
+                WeatherControllerTimeRange first =
+                    controllerTimeRanges[firstIndex];
+                if (!IsSimpleDaytimeEntry(first))
+                {
+                    continue;
+                }
+
+                for (int secondIndex = 0;
+                     secondIndex < controllerTimeRanges.Count;
+                     secondIndex++)
+                {
+                    if (firstIndex == secondIndex)
+                    {
+                        continue;
+                    }
+
+                    WeatherControllerTimeRange second =
+                        controllerTimeRanges[secondIndex];
+                    if (!IsSimpleDaytimeEntry(second) ||
+                        second.startHour <= first.startHour)
+                    {
+                        continue;
+                    }
+
+                    float overlap = first.endHour - second.startHour;
+                    if (overlap <= 0f || first.endHour > second.endHour)
+                    {
+                        continue;
+                    }
+
+                    first.blendOutHours = Mathf.Max(
+                        first.blendOutHours,
+                        overlap);
+                    second.blendInHours = Mathf.Max(
+                        second.blendInHours,
+                        overlap);
+                }
+            }
+        }
+
+        private static bool IsSimpleDaytimeEntry(WeatherScheduleEntry entry)
+        {
+            return entry != null &&
+                   !entry.fullDay &&
+                   entry.startHour < entry.endHour;
+        }
+
+        private bool TryEvaluateWeather(out WeatherBlendResult result)
+        {
+            PrepareEvaluationBuffers();
+            WeatherWeightResolutionMode resolutionMode =
+                WeatherContributionResolver.Resolve(
+                    scheduleWindowBuffer,
+                    timeOfDay,
+                    weightContributionBuffer);
+
+            sampleContributionBuffer.Clear();
+            if (resolutionMode == WeatherWeightResolutionMode.Scheduled)
+            {
+                float normalizedTime = GetNormalizedTime();
+                for (int index = 0; index < weightContributionBuffer.Count; index++)
+                {
+                    WeatherWeightContribution contribution =
+                        weightContributionBuffer[index];
+                    int sourceIndex = contribution.SourceIndex;
+                    if (sourceIndex < 0 || sourceIndex >= presetBuffer.Count)
+                    {
+                        continue;
+                    }
+
+                    DawnWeatherPreset preset = presetBuffer[sourceIndex];
+                    if (!WeatherPresetSampler.TrySample(
+                            preset,
+                            normalizedTime,
+                            out WeatherSample sample))
+                    {
+                        continue;
+                    }
+
+                    sampleContributionBuffer.Add(new WeatherSampleContribution(
+                        sourceIndex,
+                        sample,
+                        contribution.NormalizedWeight));
+                }
+
+                if (sampleContributionBuffer.Count > 0 &&
+                    WeatherBlender.TryBlend(sampleContributionBuffer, out result))
+                {
+                    return true;
+                }
+            }
+
+            return TryBlendFallback(out result);
+        }
+
+        private void PrepareEvaluationBuffers()
+        {
+            scheduleWindowBuffer.Clear();
+            presetBuffer.Clear();
+
+            int rangeCount = controllerTimeRanges?.Count ?? 0;
+            EnsureCapacity(scheduleWindowBuffer, rangeCount);
+            EnsureCapacity(presetBuffer, rangeCount);
+            EnsureCapacity(weightContributionBuffer, rangeCount);
+            EnsureCapacity(sampleContributionBuffer, rangeCount);
+
+            for (int index = 0; index < rangeCount; index++)
+            {
+                WeatherControllerTimeRange range = controllerTimeRanges[index];
+                DawnWeatherPreset preset = null;
+                WeatherScheduleWindow window = default;
+                if (range != null &&
+                    (NeedsScheduleMigration || range.enabled) &&
+                    range.controller != null &&
+                    range.controller.isActiveAndEnabled &&
+                    range.controller.ActivePreset != null)
+                {
+                    preset = range.controller.ActivePreset;
+                    window = NeedsScheduleMigration
+                        ? range.CreateLegacyScheduleWindow()
+                        : range.CreateScheduleWindow();
+                }
+
+                scheduleWindowBuffer.Add(window);
+                presetBuffer.Add(preset);
+            }
+        }
+
+        private bool TryBlendFallback(out WeatherBlendResult result)
+        {
+            sampleContributionBuffer.Clear();
+            if (WeatherPresetSampler.TrySample(
+                    fallbackPreset,
+                    GetNormalizedTime(),
+                    out WeatherSample fallbackSample))
+            {
+                weightContributionBuffer.Clear();
+                weightContributionBuffer.Add(
+                    WeatherWeightContribution.CreateFallback());
+                sampleContributionBuffer.Add(new WeatherSampleContribution(
+                    WeatherWeightContribution.FallbackSourceIndex,
+                    fallbackSample,
+                    1f));
+                return WeatherBlender.TryBlend(sampleContributionBuffer, out result);
+            }
+
+            result = default;
+            WarnMissingFallback();
+            return false;
+        }
+
+        private void WarnMissingFallback()
+        {
+            if (!isActiveAndEnabled)
+            {
+                return;
+            }
+
+            double now = Time.realtimeSinceStartupAsDouble;
+            if (now < nextFallbackWarningTime)
+            {
+                return;
+            }
+
+            nextFallbackWarningTime = now + FallbackWarningIntervalSeconds;
+            Debug.LogWarning(
+                "DawnTODSystem has no valid scheduled weather and no valid fallback preset; " +
+                "preserving the previous complete weather result.",
+                this);
+        }
+
+        private static void EnsureCapacity<T>(List<T> buffer, int requiredCapacity)
+        {
+            if (buffer.Capacity < requiredCapacity)
+            {
+                buffer.Capacity = requiredCapacity;
+            }
         }
 
         /// <summary>
@@ -478,45 +700,52 @@ namespace DawnTOD
         /// </summary>
         private void ApplyMixedWeatherResult()
         {
-            // ========== 应用太阳属性 ==========
-            if (sunLight != null && mixedResult.sunDir.sqrMagnitude > 0.0001f)
+            if (!hasMixedResult)
             {
-                Vector3 dir = mixedResult.sunDir.normalized;
-                sunLight.transform.rotation = Quaternion.LookRotation(dir, Vector3.up);
-                sunLight.intensity = mixedResult.sunIntensity;
-                sunLight.color = mixedResult.sunColor;
+                return;
+            }
+
+            // ========== 应用太阳属性 ==========
+            if (sunLight != null)
+            {
+                sunLight.gameObject.SetActive(true);
+                sunLight.transform.rotation = CreateLookRotation(mixedResult.SunDirection);
+                sunLight.intensity = mixedResult.SunIntensity;
+                sunLight.color = mixedResult.SunColor;
             }
 
             // ========== 应用月亮属性 ==========
-            if (moonLight != null && mixedResult.moonDir.sqrMagnitude > 0.0001f)
+            if (moonLight != null)
             {
-                Vector3 dir = mixedResult.moonDir.normalized;
-                moonLight.transform.rotation = Quaternion.LookRotation(dir, Vector3.up);
-                moonLight.intensity = mixedResult.moonIntensity;
-                moonLight.color = mixedResult.moonColor;
+                moonLight.gameObject.SetActive(true);
+                moonLight.transform.rotation = CreateLookRotation(mixedResult.MoonDirection);
+                moonLight.intensity = mixedResult.MoonIntensity;
+                moonLight.color = mixedResult.MoonColor;
             }
+
+            UpdateCelestialShadows();
 #if USING_HDRP
             // ========== 应用天空属性 ==========
             if (physicalSky != null)
             {
                 physicalSky.spaceEmissionMultiplier.overrideState = true;
-                physicalSky.spaceEmissionMultiplier.value = mixedResult.starEmission;
+                physicalSky.spaceEmissionMultiplier.value = mixedResult.StarEmission;
             }
 
             // ========== 应用雾属性 ==========
             if (fog != null)
             {
                 fog.meanFreePath.overrideState = true;
-                fog.meanFreePath.value = mixedResult.fogDistance;
+                fog.meanFreePath.value = mixedResult.FogDistance;
 
                 fog.baseHeight.overrideState = true;
-                fog.baseHeight.value = mixedResult.fogHeight;
+                fog.baseHeight.value = mixedResult.FogHeight;
 
                 fog.enableVolumetricFog.overrideState = true;
                 fog.enableVolumetricFog.value = true;
 
                 fog.albedo.overrideState = true;
-                fog.albedo.value = mixedResult.fogColor;
+                fog.albedo.value = mixedResult.FogColor;
             }
 
             // ========== 应用曝光属性 ==========
@@ -525,7 +754,7 @@ namespace DawnTOD
                 exposure.mode.overrideState = true;
                 exposure.mode.value = ExposureMode.Automatic;
                 exposure.compensation.overrideState = true;
-                exposure.compensation.value = mixedResult.exposureCompensation;
+                exposure.compensation.value = mixedResult.ExposureCompensation;
             }
 #endif
             // ========== 应用雨水混合结果 ==========
@@ -537,10 +766,7 @@ namespace DawnTOD
         /// </summary>
         public void RefreshWeatherBlendingSystem()
         {
-            mixedResult.Reset();
-            BlendActivePresets();
-            ApplyMixedWeatherResult();
-            CheckDayNightTransition();
+            UpdateWeatherBlendingSystem();
         }
 
         /// <summary>
@@ -548,15 +774,29 @@ namespace DawnTOD
         /// </summary>
         private void UpdateWeatherBlendingSystem()
         {
-            BlendActivePresets();
+            if (TryEvaluateWeather(out WeatherBlendResult evaluatedResult))
+            {
+                mixedResult = evaluatedResult;
+                hasMixedResult = true;
+            }
+
             ApplyMixedWeatherResult();
             CheckDayNightTransition();
+        }
+
+        private static Quaternion CreateLookRotation(Vector3 direction)
+        {
+            Vector3 up = Mathf.Abs(Vector3.Dot(direction, Vector3.up)) > 0.999f
+                ? Vector3.forward
+                : Vector3.up;
+            return Quaternion.LookRotation(direction, up);
         }
         #endregion
 
         #region 内部私有方法
         private void InitializeTimeManager()
         {
+            UnsubscribeTimeManager();
             timeManager = new TimeManager
             {
                 autoAdvanceTime = autoAdvanceTime,
@@ -572,25 +812,120 @@ namespace DawnTOD
             timeManager.OnSunset += OnTimeManagerSunset;
             timeManager.OnMidnight += OnTimeManagerMidnight;
         }
-        
+
+        private void SyncTimeManagerSettings()
+        {
+            if (timeManager == null)
+            {
+                return;
+            }
+
+            timeManager.autoAdvanceTime = autoAdvanceTime;
+            timeManager.dayLengthInSeconds = Mathf.Max(1f, dayLengthInSeconds);
+            timeManager.timeScale = timeScale;
+            timeManager.SetSunriseSunset(sunriseTime, sunsetTime);
+        }
+
+        private void UnsubscribeTimeManager()
+        {
+            if (timeManager == null)
+            {
+                return;
+            }
+
+            timeManager.OnTimeChanged -= OnTimeManagerTimeChanged;
+            timeManager.OnSunrise -= OnTimeManagerSunrise;
+            timeManager.OnSunset -= OnTimeManagerSunset;
+            timeManager.OnMidnight -= OnTimeManagerMidnight;
+        }
+
         private void ApplyRainMixedResult()
         {
-            if (DawnGPUParticleSystem.Instance == null) return;
-            
-            DawnGPUParticleSystem.Instance.ParticleShow = mixedResult.hasRain;
-            
-            if (mixedResult.hasRain)
+            DawnGPUParticleSystem rainOutput = ResolveRainParticleSystem();
+            ApplyRainParameters(rainOutput, mixedResult);
+            if (rainOutput == null && mixedResult.HasPrecipitation)
             {
-                DawnGPUParticleSystem.Instance.baseFallSpeed = mixedResult.rainySpeed;
-                DawnGPUParticleSystem.Instance.rainDensity = mixedResult.rainDensity;
-                DawnGPUParticleSystem.Instance.rainWindZRotation = mixedResult.rainWindZRotation;
+                WarnMissingRainOutput();
+            }
+        }
+
+        internal static void ApplyRainParameters(
+            DawnGPUParticleSystem particleSystem,
+            WeatherBlendResult result)
+        {
+            if (particleSystem == null)
+            {
+                return;
+            }
+
+            if (result.HasPrecipitation)
+            {
+                particleSystem.SetRainState(
+                    true,
+                    result.RainSpeed,
+                    result.RainDensity,
+                    result.RainWindZRotation);
             }
             else
             {
-                DawnGPUParticleSystem.Instance.baseFallSpeed = 0f;
-                DawnGPUParticleSystem.Instance.rainDensity = 0f;
-                DawnGPUParticleSystem.Instance.rainWindZRotation = 0f;
+                particleSystem.SetRainState(false, 0f, 0f, 0f);
             }
+        }
+
+        internal DawnGPUParticleSystem ResolveRainParticleSystem()
+        {
+            if (rainParticleSystem != null)
+            {
+                return rainParticleSystem;
+            }
+
+            if (resolvedLegacyRainParticleSystem != null)
+            {
+                return resolvedLegacyRainParticleSystem;
+            }
+
+            if (rainOutputResolutionAttempted)
+            {
+                return null;
+            }
+
+            rainOutputResolutionAttempted = true;
+            resolvedLegacyRainParticleSystem =
+                GetComponentInChildren<DawnGPUParticleSystem>(true);
+            if (resolvedLegacyRainParticleSystem == null)
+            {
+                resolvedLegacyRainParticleSystem =
+                    FindObjectOfType<DawnGPUParticleSystem>(true);
+            }
+
+            return resolvedLegacyRainParticleSystem;
+        }
+
+        internal void ResetRainOutputResolution()
+        {
+            resolvedLegacyRainParticleSystem = rainParticleSystem;
+            rainOutputResolutionAttempted = rainParticleSystem != null;
+            nextRainOutputWarningTime = 0d;
+        }
+
+        private void WarnMissingRainOutput()
+        {
+            if (!isActiveAndEnabled)
+            {
+                return;
+            }
+
+            double now = Time.realtimeSinceStartupAsDouble;
+            if (now < nextRainOutputWarningTime)
+            {
+                return;
+            }
+
+            nextRainOutputWarningTime = now + RainOutputWarningIntervalSeconds;
+            Debug.LogWarning(
+                "The blended weather requires precipitation, but DawnTODSystem has no Rain Output. " +
+                "Assign a DawnGPUParticleSystem in Scene Outputs or create GameObject/MagicDawn/Rain Output.",
+                this);
         }
 
 #if USING_HDRP
@@ -605,81 +940,86 @@ namespace DawnTOD
                 return;
             }
 
-            if (!hdrpVolume.profile.TryGet(out physicalSky))
-            {
-                physicalSky = hdrpVolume.profile.Add<PhysicallyBasedSky>();
-                physicalSky.active = true;
-            }
-
-            if (!hdrpVolume.profile.TryGet(out fog))
-            {
-                fog = hdrpVolume.profile.Add<Fog>();
-                fog.active = true;
-            }
-
-            if (!hdrpVolume.profile.TryGet(out exposure))
-            {
-                exposure = hdrpVolume.profile.Add<Exposure>();
-                exposure.active = true;
-            }
-
-            if (!hdrpVolume.profile.TryGet(out indirectLighting))
-            {
-                indirectLighting = hdrpVolume.profile.Add<IndirectLightingController>();
-                indirectLighting.active = true;
-            }
+            hdrpVolume.profile.TryGet(out physicalSky);
+            hdrpVolume.profile.TryGet(out fog);
+            hdrpVolume.profile.TryGet(out exposure);
+            hdrpVolume.profile.TryGet(out indirectLighting);
         }
 #endif
 
         private void CheckDayNightTransition()
         {
+            // Sunrise/sunset remain event and display boundaries only. Preset curves own
+            // celestial intensity, so twilight never toggles either light GameObject.
             isNight = timeOfDay < sunriseTime || timeOfDay >= sunsetTime;
-            if (sunLight != null)
+        }
+
+        private void UpdateCelestialShadows()
+        {
+            if (shadowOwner != sunLight && shadowOwner != moonLight)
             {
-                sunLight.gameObject.SetActive(!isNight);
-            }
-            
-            if (moonLight != null)
-            {
-                moonLight.gameObject.SetActive(isNight);
+                shadowOwner = null;
             }
 
-            if (wasNight != isNight)
+            float sunIntensity = GetEffectiveIntensity(sunLight);
+            float moonIntensity = GetEffectiveIntensity(moonLight);
+            Light candidate = sunIntensity >= moonIntensity ? sunLight : moonLight;
+            float candidateIntensity = Mathf.Max(sunIntensity, moonIntensity);
+            float disableIntensity = Mathf.Max(
+                0f,
+                shadowEnableIntensity - shadowHysteresis);
+
+            if (shadowOwner != null)
             {
-                if (isNight)
+                float ownerIntensity = GetEffectiveIntensity(shadowOwner);
+                bool ownerIsSun = shadowOwner == sunLight;
+                float competitorIntensity = ownerIsSun ? moonIntensity : sunIntensity;
+                Light competitor = ownerIsSun ? moonLight : sunLight;
+
+                if (ownerIntensity < disableIntensity)
                 {
-                    StartNight();
+                    shadowOwner = null;
                 }
-                else
+                else if (competitor != null &&
+                         competitorIntensity >= shadowEnableIntensity &&
+                         competitorIntensity > ownerIntensity + shadowHysteresis)
                 {
-                    StartDay();
+                    shadowOwner = competitor;
                 }
-                wasNight = isNight;
+            }
+
+            if (shadowOwner == null &&
+                candidate != null &&
+                candidateIntensity >= shadowEnableIntensity)
+            {
+                shadowOwner = candidate;
+            }
+
+            ApplyShadowMode(sunLight, shadowOwner == sunLight);
+            ApplyShadowMode(moonLight, shadowOwner == moonLight);
+        }
+
+        private static float GetEffectiveIntensity(Light light)
+        {
+            if (light == null || !light.enabled || !light.gameObject.activeInHierarchy)
+            {
+                return 0f;
+            }
+
+            return Mathf.Max(0f, light.intensity);
+        }
+
+        private static void ApplyShadowMode(Light light, bool enabled)
+        {
+            if (light != null)
+            {
+                light.shadows = enabled ? LightShadows.Soft : LightShadows.None;
             }
         }
 
-        private void StartDay()
+        internal Light GetShadowOwnerForTests()
         {
-            if (sunLight != null)
-            {
-                sunLight.shadows = LightShadows.Soft;
-            }
-            if (moonLight != null)
-            {
-                moonLight.shadows = LightShadows.None;
-            }
-        }
-
-        private void StartNight()
-        {
-            if (sunLight != null)
-            {
-                sunLight.shadows = LightShadows.None;
-            }
-            if (moonLight != null)
-            {
-                moonLight.shadows = LightShadows.Soft;
-            }
+            return shadowOwner;
         }
         #endregion
 
@@ -694,12 +1034,11 @@ namespace DawnTOD
             try
             {
                 normalizedTime = Mathf.Clamp01(normalizedTime);
-                
+
                 // 设置时间并更新系统
                 float newTimeOfDay = normalizedTime * 24f;
                 SetTime(newTimeOfDay);
-                UpdateWeatherBlendingSystem();
-                
+
                 return true;
             }
             catch (Exception e)
@@ -716,7 +1055,7 @@ namespace DawnTOD
         /// <returns>是否成功应用</returns>
         public bool EvaluateByHour(float hour)
         {
-            hour = Mathf.Repeat(hour, 24f);
+            hour = WeatherScheduleWeightResolver.NormalizeHour(hour);
             return Evaluate(hour / 24f);
         }
 
@@ -726,14 +1065,19 @@ namespace DawnTOD
         /// <returns>白天返回太阳光，夜间返回月光，如果都不存在则返回null</returns>
         public Light GetMainDirectionalLight()
         {
-            if (isNight)
+            if (sunLight == null)
             {
-                return moonLight != null ? moonLight : sunLight;
+                return moonLight;
             }
-            else
+
+            if (moonLight == null)
             {
-                return sunLight != null ? sunLight : moonLight;
+                return sunLight;
             }
+
+            return GetEffectiveIntensity(sunLight) >= GetEffectiveIntensity(moonLight)
+                ? sunLight
+                : moonLight;
         }
 
 
@@ -757,11 +1101,13 @@ namespace DawnTOD
         /// </summary>
         public void SetTime(float hour)
         {
-            timeOfDay = Mathf.Repeat(hour, 24f);
+            timeOfDay = WeatherScheduleWeightResolver.NormalizeHour(hour);
             if (timeManager != null)
             {
                 timeManager.SetTime(timeOfDay);
             }
+
+            UpdateWeatherBlendingSystem();
         }
 
         /// <summary>

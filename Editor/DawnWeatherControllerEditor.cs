@@ -32,6 +32,7 @@ namespace DawnTODEditor
         private SerializedProperty exposureCompensationCurveProp;
 #endif
         private SerializedProperty rainySpeedCurveProp;
+        private SerializedProperty precipitationAmountCurveProp;
         private SerializedProperty rainDensityCurveProp;
         private SerializedProperty rainWindZRotationCurveProp;
 
@@ -46,14 +47,7 @@ namespace DawnTODEditor
         {
             activePresetProp = serializedObject.FindProperty("activePreset");
             timeOfDayProp = serializedObject.FindProperty("timeOfDay");
-            
-            if (DawnTODSystem.Instance != null)
-            {
-                timeOfDayProp.floatValue = DawnTODSystem.Instance.TimeOfDay;
-                serializedObject.ApplyModifiedPropertiesWithoutUndo();
-                Repaint();
-            }
-            
+
             UpdatePresetSerializedProperties();
         }
 
@@ -84,6 +78,7 @@ namespace DawnTODEditor
             exposureCompensationCurveProp = presetSerializedObject.FindProperty("exposureCompensationCurve");
 #endif
             rainySpeedCurveProp = presetSerializedObject.FindProperty("rainySpeedCurve");
+            precipitationAmountCurveProp = presetSerializedObject.FindProperty("precipitationAmountCurve");
             rainDensityCurveProp = presetSerializedObject.FindProperty("rainDensityCurve");
             rainWindZRotationCurveProp = presetSerializedObject.FindProperty("rainWindZRotationCurve");
         }
@@ -100,10 +95,10 @@ namespace DawnTODEditor
             EditorGUILayout.PropertyField(activePresetProp, new GUIContent("Active Preset"));
             if (EditorGUI.EndChangeCheck())
             {
+                ApplyControllerModifiedPropertiesAndRefresh(
+                    serializedObject,
+                    controller);
                 UpdatePresetSerializedProperties();
-                serializedObject.ApplyModifiedProperties();
-                controller.Refresh();
-                SceneView.RepaintAll();
             }
             EditorGUILayout.Space(5);
 
@@ -176,40 +171,64 @@ namespace DawnTODEditor
                     EditorGUI.indentLevel++;
                     SerializedProperty rainyEnable = presetSerializedObject.FindProperty("rainyEnable");
                     EditorGUILayout.PropertyField(rainyEnable, new GUIContent("Enable Rainy"));
+                    DrawCurveField("Precipitation Amount", precipitationAmountCurveProp, controller.NormalizedTime);
                     DrawCurveField("Rainy Speed", rainySpeedCurveProp, controller.NormalizedTime);
                     DrawCurveField("Rain Density", rainDensityCurveProp, controller.NormalizedTime);
                     DrawCurveField("Rain WindZRotation", rainWindZRotationCurveProp, controller.NormalizedTime);
                     EditorGUI.indentLevel--;
                 }
 
-                // 只保存预设数据，不污染场景物体
-                if (GUI.changed)
-                {
-                    presetSerializedObject.ApplyModifiedProperties();
-                    EditorUtility.SetDirty(preset);
-                    controller.Refresh();
-                    SceneView.RepaintAll();
-                }
+                ApplyPresetModifiedPropertiesAndRefresh(
+                    presetSerializedObject,
+                    preset,
+                    controller);
             }
             else
             {
                 EditorGUILayout.HelpBox("请设置 Active Preset 以查看预设信息", MessageType.Info);
             }
 
-            serializedObject.ApplyModifiedProperties();
+            ApplyControllerModifiedPropertiesAndRefresh(
+                serializedObject,
+                controller);
+        }
 
-            // 最小范围刷新
-            if (GUI.changed)
+        internal static bool ApplyControllerModifiedPropertiesAndRefresh(
+            SerializedObject serializedObject,
+            DawnWeatherController controller)
+        {
+            if (!serializedObject.ApplyModifiedProperties())
             {
-                EditorUtility.SetDirty(controller);
-                controller.Refresh();
-                SceneView.RepaintAll();
+                return false;
             }
+
+            EditorUtility.SetDirty(controller);
+            controller.Refresh();
+            SceneView.RepaintAll();
+            return true;
+        }
+
+        internal static bool ApplyPresetModifiedPropertiesAndRefresh(
+            SerializedObject serializedObject,
+            DawnWeatherPreset preset,
+            DawnWeatherController controller)
+        {
+            if (!serializedObject.ApplyModifiedProperties())
+            {
+                return false;
+            }
+
+            EditorUtility.SetDirty(preset);
+            controller.Refresh();
+            SceneView.RepaintAll();
+            return true;
         }
 
         private void DrawTimeSlider(DawnWeatherController controller)
         {
-            float currentTime = timeOfDayProp.floatValue;
+            float currentTime = DawnTODSystem.Instance != null
+                ? DawnTODSystem.Instance.TimeOfDay
+                : timeOfDayProp.floatValue;
             Rect sliderRect = EditorGUILayout.GetControlRect(GUILayout.Height(SLIDER_HEIGHT));
             DrawDayNightGradient(sliderRect);
 
@@ -228,7 +247,6 @@ namespace DawnTODEditor
                     {
                         GUIUtility.hotControl = controlID;
                         SetTimeFromMousePosition(controller, sliderRect, e.mousePosition.x, handleWidth);
-                        GUI.changed = true;
                         e.Use();
                         Repaint();
                     }
@@ -238,7 +256,6 @@ namespace DawnTODEditor
                     if (GUIUtility.hotControl == controlID)
                     {
                         SetTimeFromMousePosition(controller, sliderRect, e.mousePosition.x, handleWidth);
-                        GUI.changed = true;
                         e.Use();
                         Repaint();
                         SceneView.RepaintAll();
@@ -303,10 +320,10 @@ namespace DawnTODEditor
             float newTime = normalized * TIME_RANGE;
 
             timeOfDayProp.floatValue = newTime;
-            serializedObject.ApplyModifiedPropertiesWithoutUndo();
-
+            Undo.RecordObject(controller, "Change TOD Time");
             controller.SetTime(newTime);
-            controller.Refresh();
+            EditorUtility.SetDirty(controller);
+            serializedObject.Update();
         }
 
         private void DrawCurveField(string label, SerializedProperty curveProp, float normalizedTime)
@@ -349,14 +366,5 @@ namespace DawnTODEditor
             EditorGUILayout.EndHorizontal();
         }
 
-        // ====================== 安全场景预览 ======================
-        private void OnSceneGUI()
-        {
-            DawnWeatherController controller = target as DawnWeatherController;
-            if (controller != null && controller.ActivePreset != null)
-            {
-                controller.Refresh();
-            }
-        }
     }
 }

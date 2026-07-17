@@ -1,5 +1,7 @@
 ﻿using UnityEngine;
 
+using System;
+using UnityEngine.Rendering;
 namespace DawnTOD
 {
     public static class ScatteringKeys
@@ -16,6 +18,7 @@ namespace DawnTOD
         public static readonly int kPlanetRadius = Shader.PropertyToID("_PlanetRadius");
         public static readonly int kAtmosphereHeight = Shader.PropertyToID("_AtmosphereHeight");
         public static readonly int kSurfaceHeight = Shader.PropertyToID("_SurfaceHeight");
+        public static readonly int kAtmosphereGroundColor = Shader.PropertyToID("_AtmosphereGroundColor");
         public static readonly int kDistanceScale = Shader.PropertyToID("_DistanceScale");
         //public static readonly int kSunOnSurface = Shader.PropertyToID("_SunOnSurface");
         public static readonly int kScatteringR = Shader.PropertyToID("_ScatteringR");
@@ -51,12 +54,13 @@ namespace DawnTOD
             }
         }
 
-        public static void ReadRTpixelsBackToCPU(RenderTexture src, Texture2D dst)
+        public static bool RequestRTpixelsBackToCPU(RenderTexture src, TextureFormat dstFormat, Action<AsyncGPUReadbackRequest> callback)
         {
-            RenderTexture currentActiveRT = RenderTexture.active;
-            RenderTexture.active = src;
-            dst.ReadPixels(new Rect(0, 0, dst.width, dst.height), 0, 0);
-            RenderTexture.active = currentActiveRT;
+            if (src == null || !src.IsCreated() || !SystemInfo.supportsAsyncGPUReadback)
+                return false;
+
+            AsyncGPUReadback.Request(src, 0, dstFormat, callback);
+            return true;
         }
 
         public static void Dispatch(ComputeShader cs, int kernel, Vector2Int lutSize)

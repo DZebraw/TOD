@@ -1,440 +1,660 @@
 using System;
 using UnityEngine;
 using UnityEngine.Rendering;
-using UnityEngine.Serialization;
 using Random = UnityEngine.Random;
 
 namespace DawnTOD
 {
+    [DisallowMultipleComponent]
     [RequireComponent(typeof(MeshFilter))]
     [RequireComponent(typeof(MeshRenderer))]
     [ExecuteAlways]
     public class DawnGPUParticleSystem : MonoBehaviour
     {
+        private const string DefaultComputeResourcePath = "RainyParticleUpdate";
+        private const string DefaultMaterialResourcePath = "DawnRain";
+        private const string UpdateKernelName = "CSMain";
+        private const int ThreadGroupSize = 8;
+        private const float EditorDeltaTime = 0.02f;
+
         private static DawnGPUParticleSystem instance;
+
         public static DawnGPUParticleSystem Instance
         {
             get
             {
                 if (instance == null)
                 {
-                    instance = FindObjectOfType<DawnGPUParticleSystem>();
+                    instance = FindObjectOfType<DawnGPUParticleSystem>(true);
                 }
+
                 return instance;
             }
         }
 
-        [HideInInspector] public bool ParticleShow = false; //由WeatherController控制
-        [HideInInspector] public float baseFallSpeed = 40f;
-        [HideInInspector] public float rainDensity = 1.0f;
-        [HideInInspector] public float rainWindZRotation = 0f;
-        [HideInInspector] public Vector2Int maxParticlesCount = new Vector2Int(512, 512);
-        [HideInInspector] public Vector2 emitterSize = new Vector2(35, 35);
+        [Header("Rain State")]
+        [Tooltip("Whether the rain output should currently render and simulate.")]
+        public bool ParticleShow;
+        [Min(0f)] public float baseFallSpeed = 40f;
+        [Min(0f)] public float rainDensity = 1f;
+        [Range(-45f, 45f)] public float rainWindZRotation;
+
+        [Header("Particle Capacity")]
+        [Tooltip("GPU state texture dimensions. Values are rounded to powers of two and clamped to 8-2048.")]
+        public Vector2Int maxParticlesCount = new Vector2Int(512, 512);
+        [Tooltip("Horizontal size of the rain emitter around the active camera.")]
+        public Vector2 emitterSize = new Vector2(35f, 35f);
+
+        [Header("Runtime Resources")]
+        [Tooltip("Optional override. When empty, Resources/RainyParticleUpdate is used.")]
+        [SerializeField] private ComputeShader rainyParticleUpdateCS;
+        [Tooltip("Optional override. When empty, Resources/DawnRain is used.")]
+        [SerializeField] private Material rainMaterialTemplate;
 
         private Mesh particlesMesh;
         private MeshFilter meshFilter;
         private MeshRenderer meshRenderer;
+        private MaterialPropertyBlock materialProperties;
 
-        private ComputeShader rainyParticleUpdateCS;
+        private ComputeShader runtimeParticleUpdateCS;
         private RenderTexture rainyParticleStateRT0;
         private RenderTexture rainyParticleStateRT1;
-        private int updateKernel; // Compute Shader的Kernel ID
+        private int updateKernel = -1;
+        private Vector2Int allocatedParticleCount;
+        private Vector2 allocatedEmitterSize;
 
-        private float yOffset = 50f; //后续基于深度图抓到的高度进行向上偏移
+        private readonly float yOffset = 50f;
         private Camera mainCamera;
-
-        private Material originalMaterial;
-        private bool isMaterialHidden = false;
+        private bool initializationFailed;
+        private bool warnedMissingCamera;
 
         private bool IsEditorMode => !Application.isPlaying;
-        private const float EditorDeltaTime = 0.02f;
+        internal bool HasAllocatedResources =>
+            particlesMesh != null ||
+            rainyParticleStateRT0 != null ||
+            rainyParticleStateRT1 != null ||
+            runtimeParticleUpdateCS != null;
 
-        private bool needRebuild = false;
+        private void Reset()
+        {
+            CacheComponents();
+            AssignDefaultResourceOverrides();
+            if (meshRenderer != null && meshRenderer.sharedMaterial == null)
+            {
+                meshRenderer.sharedMaterial = rainMaterialTemplate;
+            }
+
+            SetRendererVisible(false);
+        }
 
         private void Awake()
         {
-            // 单例逻辑仅在运行模式执行
-            if (Application.isPlaying)
-            {
-                if (instance == null)
-                {
-                    instance = this;
-                }
-                else if (instance != this)
-                {
-                    DestroyImmediate(gameObject);
-                    return;
-                }
-            }
+            CacheComponents();
+            RegisterCompatibilityInstance();
         }
 
         private void OnEnable()
         {
-            needRebuild = true;
+            CacheComponents();
+            RegisterCompatibilityInstance();
             CacheMainCamera();
-
-            // 缓存原始材质（确保只缓存一次）
-            if (meshRenderer != null && originalMaterial == null)
-            {
-                originalMaterial = meshRenderer.sharedMaterial;
-            }
+            initializationFailed = false;
+            warnedMissingCamera = false;
+            SetRendererVisible(false);
         }
 
         private void Update()
         {
-            if (needRebuild)
+            CacheComponents();
+            if (!ParticleShow)
             {
-                RebuildParticleSystem();
-                needRebuild = false;
+                SetRendererVisible(false);
+                return;
             }
 
-            // 区分编辑器模式和运行模式的更新逻辑
-            if (IsEditorMode)
+            if (!TryEnsureInitialized())
             {
-                EditorModeUpdate();
+                SetRendererVisible(false);
+                return;
             }
-            else
-            {
-                PlayModeUpdate();
-            }
+
+            SetRendererVisible(true);
+            SyncWithMainCamera();
+            UpdateGPUSimulation(IsEditorMode ? EditorDeltaTime : Time.deltaTime);
         }
 
-        private void RebuildParticleSystem()
+        private void OnDisable()
         {
-            meshFilter = GetComponent<MeshFilter>();
-            meshRenderer = GetComponent<MeshRenderer>();
-
-            if (meshRenderer.sharedMaterial == null)
+            SetRendererVisible(false);
+            ReleaseOwnedResources();
+            if (instance == this)
             {
-                meshRenderer.sharedMaterial = new Material(Shader.Find("TOD/RaindropParticle"));
-                originalMaterial = meshRenderer.sharedMaterial;
-            }
-
-            ValidateAndGenerateMesh();
-            InitGPUSimulation();
-        }
-
-        private void EditorModeUpdate()
-        {
-            if (ParticleShow)
-            {
-                if (isMaterialHidden && meshRenderer != null)
-                {
-                    meshRenderer.sharedMaterial = originalMaterial;
-                    isMaterialHidden = false;
-                }
-
-                SyncWithMainCamera();
-                UpdateGPUSimulationInEditor();
-            }
-            else
-            {
-                if (meshRenderer != null && !isMaterialHidden)
-                {
-                    Material hiddenMaterial = new Material(Shader.Find("Hidden/Internal-Colored"));
-                    hiddenMaterial.color = new Color(0, 0, 0, 0); //完全透明
-                    hiddenMaterial.renderQueue = int.MaxValue;
-                    meshRenderer.sharedMaterial = hiddenMaterial;
-                    isMaterialHidden = true;
-                }
-            }
-        }
-
-        private void PlayModeUpdate()
-        {
-            if (ParticleShow)
-            {
-                // 恢复粒子渲染
-                if (isMaterialHidden && meshRenderer != null)
-                {
-                    meshRenderer.sharedMaterial = originalMaterial;
-                    isMaterialHidden = false;
-                }
-
-                SyncWithMainCamera();
-                UpdateGPUSimulation();
-            }
-            else
-            {
-                if (meshRenderer != null && !isMaterialHidden)
-                {
-                    Material hiddenMaterial = new Material(Shader.Find("Hidden/Internal-Colored"));
-                    hiddenMaterial.color = new Color(0, 0, 0, 0); //完全透明
-                    hiddenMaterial.renderQueue = int.MaxValue;
-                    meshRenderer.sharedMaterial = hiddenMaterial;
-                    isMaterialHidden = true;
-                }
+                instance = null;
             }
         }
 
         private void OnDestroy()
         {
-            // 释放资源
-            if (rainyParticleStateRT0 != null) rainyParticleStateRT0.Release();
-            if (rainyParticleStateRT1 != null) rainyParticleStateRT1.Release();
-
-            // 重置单例
-            if (Application.isPlaying && instance == this)
+            ReleaseOwnedResources();
+            if (instance == this)
             {
                 instance = null;
             }
-
-            // 清理临时材质
-            if (isMaterialHidden && meshRenderer != null)
-            {
-                if (Application.isPlaying)
-                    Destroy(meshRenderer.sharedMaterial);
-                else
-                    DestroyImmediate(meshRenderer.sharedMaterial);
-            }
-
-            needRebuild = false;
         }
 
-        #region 摄像机同步逻辑
+        public void SetRainState(
+            bool show,
+            float fallSpeed,
+            float density,
+            float windZRotation)
+        {
+            ParticleShow = show;
+            baseFallSpeed = Mathf.Max(0f, fallSpeed);
+            rainDensity = Mathf.Max(0f, density);
+            rainWindZRotation = Mathf.Clamp(windZRotation, -45f, 45f);
+            if (!show)
+            {
+                SetRendererVisible(false);
+            }
+        }
+
+        internal void ConfigureResources(
+            ComputeShader computeShader,
+            Material materialTemplate)
+        {
+            if (rainyParticleUpdateCS == computeShader &&
+                rainMaterialTemplate == materialTemplate)
+            {
+                return;
+            }
+
+            ReleaseOwnedResources();
+            rainyParticleUpdateCS = computeShader;
+            rainMaterialTemplate = materialTemplate;
+            initializationFailed = false;
+            CacheComponents();
+            if (meshRenderer != null && materialTemplate != null)
+            {
+                meshRenderer.sharedMaterial = materialTemplate;
+            }
+        }
+
+        internal void AssignDefaultResourceOverrides()
+        {
+            if (rainyParticleUpdateCS == null)
+            {
+                rainyParticleUpdateCS =
+                    Resources.Load<ComputeShader>(DefaultComputeResourcePath);
+            }
+
+            if (rainMaterialTemplate == null)
+            {
+                rainMaterialTemplate =
+                    Resources.Load<Material>(DefaultMaterialResourcePath);
+            }
+
+            CacheComponents();
+            if (meshRenderer != null &&
+                meshRenderer.sharedMaterial == null &&
+                rainMaterialTemplate != null)
+            {
+                meshRenderer.sharedMaterial = rainMaterialTemplate;
+            }
+
+            initializationFailed = false;
+        }
+
+        internal bool TryEnsureInitialized()
+        {
+            SanitizeSettings();
+            if (IsConfigurationCurrent())
+            {
+                return true;
+            }
+
+            ReleaseOwnedResources();
+            if (initializationFailed)
+            {
+                return false;
+            }
+
+            CacheComponents();
+            ComputeShader sourceCompute = rainyParticleUpdateCS != null
+                ? rainyParticleUpdateCS
+                : Resources.Load<ComputeShader>(DefaultComputeResourcePath);
+            Material sourceMaterial = rainMaterialTemplate != null
+                ? rainMaterialTemplate
+                : Resources.Load<Material>(DefaultMaterialResourcePath);
+
+            if (meshFilter == null || meshRenderer == null)
+            {
+                return FailInitialization(
+                    "Rain output requires both MeshFilter and MeshRenderer components.");
+            }
+
+            if (sourceCompute == null)
+            {
+                return FailInitialization(
+                    "Missing rain ComputeShader. Assign an override or restore Resources/RainyParticleUpdate.compute.");
+            }
+
+            if (sourceMaterial == null || sourceMaterial.shader == null)
+            {
+                return FailInitialization(
+                    "Missing rain Material. Assign an override or restore Resources/DawnRain.mat.");
+            }
+
+            if (!SystemInfo.supportsComputeShaders)
+            {
+                return FailInitialization(
+                    "The current graphics device does not support Compute Shaders.");
+            }
+
+            if (!SystemInfo.SupportsRenderTextureFormat(RenderTextureFormat.ARGBFloat) ||
+                !SystemInfo.SupportsRandomWriteOnRenderTextureFormat(
+                    RenderTextureFormat.ARGBFloat))
+            {
+                return FailInitialization(
+                    "The current graphics device does not support random-write ARGBFloat RenderTextures.");
+            }
+
+            try
+            {
+                runtimeParticleUpdateCS = Instantiate(sourceCompute);
+                runtimeParticleUpdateCS.name = sourceCompute.name + " (Dawn Rain Instance)";
+                runtimeParticleUpdateCS.hideFlags = HideFlags.HideAndDontSave;
+                updateKernel = runtimeParticleUpdateCS.FindKernel(UpdateKernelName);
+
+                particlesMesh = GenerateParticlesMeshInternal(
+                    maxParticlesCount.x,
+                    maxParticlesCount.y,
+                    emitterSize);
+                particlesMesh.hideFlags = HideFlags.HideAndDontSave;
+                meshFilter.sharedMesh = particlesMesh;
+
+                rainyParticleStateRT0 = CreateStateTexture("Dawn Rain State 0");
+                rainyParticleStateRT1 = CreateStateTexture("Dawn Rain State 1");
+                if (!rainyParticleStateRT0.IsCreated() ||
+                    !rainyParticleStateRT1.IsCreated())
+                {
+                    throw new InvalidOperationException(
+                        "Unity failed to create the rain state RenderTextures.");
+                }
+
+                // The serialized template is authoritative. Per-instance values stay in
+                // the MaterialPropertyBlock, so assigning it never mutates the asset.
+                meshRenderer.sharedMaterial = sourceMaterial;
+
+                allocatedParticleCount = maxParticlesCount;
+                allocatedEmitterSize = emitterSize;
+                InitializeGPUSimulation();
+                UpdateMaterialProperties();
+                initializationFailed = false;
+                return true;
+            }
+            catch (Exception exception)
+            {
+                ReleaseOwnedResources();
+                return FailInitialization(
+                    $"Rain GPU initialization failed: {exception.Message}");
+            }
+        }
+
+        public void ValidateAndGenerateMesh()
+        {
+            SanitizeSettings();
+            CacheComponents();
+            ReleaseOwnedResources();
+            particlesMesh = GenerateParticlesMeshInternal(
+                maxParticlesCount.x,
+                maxParticlesCount.y,
+                emitterSize);
+            particlesMesh.hideFlags = HideFlags.HideAndDontSave;
+            meshFilter.sharedMesh = particlesMesh;
+        }
+
+        private void RegisterCompatibilityInstance()
+        {
+            if (instance == null)
+            {
+                instance = this;
+                return;
+            }
+
+            if (instance != this && Application.isPlaying)
+            {
+                Debug.LogWarning(
+                    "Multiple DawnGPUParticleSystem components are active. " +
+                    "DawnTOD uses its explicit Rain Output reference; the compatibility Instance returns the first active component.",
+                    this);
+            }
+        }
+
+        private void CacheComponents()
+        {
+            if (meshFilter == null)
+            {
+                meshFilter = GetComponent<MeshFilter>();
+            }
+
+            if (meshRenderer == null)
+            {
+                meshRenderer = GetComponent<MeshRenderer>();
+            }
+        }
+
         private void CacheMainCamera()
         {
             mainCamera = Camera.main;
-            if (mainCamera == null)
-            {
-                mainCamera = GameObject.FindGameObjectWithTag("MainCamera")?.GetComponent<Camera>();
-            }
         }
 
         private void SyncWithMainCamera()
         {
+            Camera currentMainCamera = Camera.main;
+            if (currentMainCamera != null && currentMainCamera != mainCamera)
+            {
+                mainCamera = currentMainCamera;
+            }
+
             if (mainCamera == null)
             {
                 CacheMainCamera();
                 if (mainCamera == null)
                 {
-                    Debug.LogWarning("未找到主摄像机，粒子系统无法同步变换！", this);
+                    if (!warnedMissingCamera)
+                    {
+                        warnedMissingCamera = true;
+                        Debug.LogWarning(
+                            "Dawn rain is active but no enabled camera with the MainCamera tag was found.",
+                            this);
+                    }
+
                     return;
                 }
             }
 
-            Vector3 newPos = transform.position;
-            newPos.x = mainCamera.transform.position.x;
-            newPos.z = mainCamera.transform.position.z;
-            newPos.y = mainCamera.transform.position.y + yOffset;
-            transform.position = newPos;
+            warnedMissingCamera = false;
+            Vector3 cameraPosition = mainCamera.transform.position;
+            transform.position = new Vector3(
+                cameraPosition.x,
+                cameraPosition.y + yOffset,
+                cameraPosition.z);
         }
-        #endregion
 
-        #region GPU粒子
-        // 初始化RenderTexture和Compute Shader
-        private void InitGPUSimulation()
+        private bool IsConfigurationCurrent()
         {
-            if (rainyParticleUpdateCS == null)
+            return runtimeParticleUpdateCS != null &&
+                   particlesMesh != null &&
+                   rainyParticleStateRT0 != null &&
+                   rainyParticleStateRT1 != null &&
+                   allocatedParticleCount == maxParticlesCount &&
+                   allocatedEmitterSize == emitterSize;
+        }
+
+        private void InitializeGPUSimulation()
+        {
+            runtimeParticleUpdateCS.SetInts(
+                "ParticleCount",
+                maxParticlesCount.x,
+                maxParticlesCount.y);
+            runtimeParticleUpdateCS.SetVector("EmitterSize", emitterSize);
+            runtimeParticleUpdateCS.SetFloat("BaseFallSpeed", baseFallSpeed);
+            runtimeParticleUpdateCS.SetFloat("RainDensity", rainDensity);
+            runtimeParticleUpdateCS.SetTexture(
+                updateKernel,
+                "ParticleState",
+                rainyParticleStateRT0);
+            runtimeParticleUpdateCS.SetTexture(
+                updateKernel,
+                "Result",
+                rainyParticleStateRT0);
+            runtimeParticleUpdateCS.SetFloat("DeltaTime", 0f);
+            DispatchSimulation();
+        }
+
+        private void UpdateGPUSimulation(float deltaTime)
+        {
+            if (!IsConfigurationCurrent())
             {
-#if UNITY_EDITOR
-                string[] csGuids = UnityEditor.AssetDatabase.FindAssets("t:ComputeShader RainyParticleUpdate");
-                if (csGuids.Length > 0)
-                {
-                    string csPath = UnityEditor.AssetDatabase.GUIDToAssetPath(csGuids[0]);
-                    rainyParticleUpdateCS = UnityEditor.AssetDatabase.LoadAssetAtPath<ComputeShader>(csPath);
-                }
-#endif
-                if (rainyParticleUpdateCS == null)
-                {
-                    Debug.LogWarning($"未在Project中找到名为\"RainyParticleUpdate\"的ComputeShader！请检查文件名称或路径", this);
-                    return;
-                }
+                return;
             }
 
-            int texWidth = maxParticlesCount.x;
-            int texHeight = maxParticlesCount.y;
+            runtimeParticleUpdateCS.SetFloat("BaseFallSpeed", baseFallSpeed);
+            runtimeParticleUpdateCS.SetFloat("RainDensity", rainDensity);
+            runtimeParticleUpdateCS.SetFloat("DeltaTime", Mathf.Max(0f, deltaTime));
+            runtimeParticleUpdateCS.SetTexture(
+                updateKernel,
+                "ParticleState",
+                rainyParticleStateRT0);
+            runtimeParticleUpdateCS.SetTexture(
+                updateKernel,
+                "Result",
+                rainyParticleStateRT1);
+            DispatchSimulation();
 
-            // 创建粒子状态纹理
-            rainyParticleStateRT0 = new RenderTexture(texWidth, texHeight, 0, RenderTextureFormat.ARGBFloat);
-            rainyParticleStateRT0.enableRandomWrite = true;
-            rainyParticleStateRT0.filterMode = FilterMode.Point;
-            rainyParticleStateRT0.Create();
-
-            rainyParticleStateRT1 = new RenderTexture(texWidth, texHeight, 0, RenderTextureFormat.ARGBFloat);
-            rainyParticleStateRT1.enableRandomWrite = true;
-            rainyParticleStateRT1.filterMode = FilterMode.Point;
-            rainyParticleStateRT1.Create();
-
-            // 初始化Compute Shader
-            updateKernel = rainyParticleUpdateCS.FindKernel("CSMain");
-            rainyParticleUpdateCS.SetInts("ParticleCount", texWidth, texHeight);
-            rainyParticleUpdateCS.SetVector("EmitterSize", emitterSize);
-            rainyParticleUpdateCS.SetFloat("BaseFallSpeed", baseFallSpeed);
-            rainyParticleUpdateCS.SetTexture(updateKernel, "ParticleState", rainyParticleStateRT0);
-            rainyParticleUpdateCS.SetTexture(updateKernel, "Result", rainyParticleStateRT0);
-            rainyParticleUpdateCS.SetFloat("DeltaTime", 0);
-            rainyParticleUpdateCS.Dispatch(updateKernel, texWidth / 8, texHeight / 8, 1);
-
-            // 给材质传递RenderTexture
-            meshRenderer.sharedMaterial.SetTexture("_ParticleStateRT", rainyParticleStateRT0);
+            (rainyParticleStateRT0, rainyParticleStateRT1) =
+                (rainyParticleStateRT1, rainyParticleStateRT0);
+            UpdateMaterialProperties();
         }
 
-        // 运行模式 - 每帧执行Ping-Pong更新
-        private void UpdateGPUSimulation()
+        private void DispatchSimulation()
         {
-            if (rainyParticleUpdateCS == null || rainyParticleStateRT0 == null || rainyParticleStateRT1 == null || meshRenderer == null) return;
-
-            rainyParticleUpdateCS.SetFloat("BaseFallSpeed", baseFallSpeed);
-            rainyParticleUpdateCS.SetFloat("RainDensity", rainDensity);
-
-            // 更新粒子状态
-            rainyParticleUpdateCS.SetFloat("DeltaTime", Time.deltaTime);
-            rainyParticleUpdateCS.SetTexture(updateKernel, "ParticleState", rainyParticleStateRT0);
-            rainyParticleUpdateCS.SetTexture(updateKernel, "Result", rainyParticleStateRT1);
-            rainyParticleUpdateCS.Dispatch(updateKernel, maxParticlesCount.x / 8, maxParticlesCount.y / 8, 1);
-
-            // 交换纹理
-            (rainyParticleStateRT0, rainyParticleStateRT1) = (rainyParticleStateRT1, rainyParticleStateRT0);
-
-            // 更新材质参数
-            meshRenderer.sharedMaterial.SetTexture("_ParticleStateRT", rainyParticleStateRT0);
-            meshRenderer.sharedMaterial.SetFloat("_RainDensity", rainDensity);
-            meshRenderer.sharedMaterial.SetFloat("_WindZRotation", rainWindZRotation);
+            int groupsX = Mathf.CeilToInt(
+                maxParticlesCount.x / (float)ThreadGroupSize);
+            int groupsY = Mathf.CeilToInt(
+                maxParticlesCount.y / (float)ThreadGroupSize);
+            runtimeParticleUpdateCS.Dispatch(updateKernel, groupsX, groupsY, 1);
         }
 
-        // 编辑器模式更新
-        private void UpdateGPUSimulationInEditor()
+        private void UpdateMaterialProperties()
         {
-            if (rainyParticleUpdateCS == null || rainyParticleStateRT0 == null || rainyParticleStateRT1 == null || meshRenderer == null) return;
-
-            rainyParticleUpdateCS.SetFloat("BaseFallSpeed", baseFallSpeed);
-            rainyParticleUpdateCS.SetFloat("RainDensity", rainDensity);
-            rainyParticleUpdateCS.SetFloat("DeltaTime", EditorDeltaTime);
-
-            rainyParticleUpdateCS.SetTexture(updateKernel, "ParticleState", rainyParticleStateRT0);
-            rainyParticleUpdateCS.SetTexture(updateKernel, "Result", rainyParticleStateRT1);
-            rainyParticleUpdateCS.Dispatch(updateKernel, maxParticlesCount.x / 8, maxParticlesCount.y / 8, 1);
-
-            // 交换纹理
-            (rainyParticleStateRT0, rainyParticleStateRT1) = (rainyParticleStateRT1, rainyParticleStateRT0);
-
-            // 更新材质参数
-            meshRenderer.sharedMaterial.SetTexture("_ParticleStateRT", rainyParticleStateRT0);
-            meshRenderer.sharedMaterial.SetFloat("_RainDensity", rainDensity);
-            meshRenderer.sharedMaterial.SetFloat("_WindZRotation", rainWindZRotation);
-        }
-        #endregion
-
-        #region 网格相关
-        /// <summary>
-        /// 验证参数并生成粒子网格
-        /// </summary>
-        public void ValidateAndGenerateMesh()
-        {
-            // 限制粒子数量为2的幂次（GPU纹理采样优化）
-            maxParticlesCount.x = Mathf.Clamp(Mathf.ClosestPowerOfTwo(maxParticlesCount.x), 2, 2048);
-            maxParticlesCount.y = Mathf.Clamp(Mathf.ClosestPowerOfTwo(maxParticlesCount.y), 2, 2048);
-
-            // 生成网格
-            particlesMesh = GenerateParticlesMeshInternal(maxParticlesCount.x, maxParticlesCount.y, emitterSize);
-
-            // 赋值给MeshFilter
-            meshFilter.sharedMesh = particlesMesh;
+            materialProperties ??= new MaterialPropertyBlock();
+            meshRenderer.GetPropertyBlock(materialProperties);
+            materialProperties.SetTexture(
+                "_ParticleStateRT",
+                rainyParticleStateRT0);
+            materialProperties.SetFloat("_RainDensity", rainDensity);
+            materialProperties.SetFloat("_WindZRotation", rainWindZRotation);
+            meshRenderer.SetPropertyBlock(materialProperties);
         }
 
-        /// <summary>
-        /// 生成粒子网格的底层逻辑
-        /// </summary>
-        private Mesh GenerateParticlesMeshInternal(int countX, int countZ, Vector2 meshSize)
+        private RenderTexture CreateStateTexture(string textureName)
         {
-            Mesh mesh = new Mesh();
-            mesh.name = "SimplifiedGPUParticleMesh";
+            var texture = new RenderTexture(
+                maxParticlesCount.x,
+                maxParticlesCount.y,
+                0,
+                RenderTextureFormat.ARGBFloat)
+            {
+                name = textureName,
+                enableRandomWrite = true,
+                filterMode = FilterMode.Point,
+                wrapMode = TextureWrapMode.Clamp,
+                useMipMap = false,
+                autoGenerateMips = false,
+                hideFlags = HideFlags.HideAndDontSave
+            };
+            texture.Create();
+            return texture;
+        }
 
-            // 根据粒子总数选择索引格式
-            mesh.indexFormat = countX * countZ > 65535 ? IndexFormat.UInt32 : IndexFormat.UInt16;
+        private void ReleaseOwnedResources()
+        {
+            SetRendererVisible(false);
+            if (meshRenderer != null)
+            {
+                meshRenderer.SetPropertyBlock(null);
+            }
 
-            // 初始化数据容器
-            Vector3[] allVertices = new Vector3[countX * countZ * 4];
-            int[] allTris = new int[countX * countZ * 6];
-            Vector2[] allUVs = new Vector2[countX * countZ * 4];
-            Color[] allColors = new Color[countX * countZ * 4];
+            materialProperties?.Clear();
+
+            if (meshFilter != null && meshFilter.sharedMesh == particlesMesh)
+            {
+                meshFilter.sharedMesh = null;
+            }
+
+            DestroyOwnedObject(rainyParticleStateRT0, releaseRenderTexture: true);
+            DestroyOwnedObject(rainyParticleStateRT1, releaseRenderTexture: true);
+            DestroyOwnedObject(particlesMesh);
+            DestroyOwnedObject(runtimeParticleUpdateCS);
+
+            rainyParticleStateRT0 = null;
+            rainyParticleStateRT1 = null;
+            particlesMesh = null;
+            runtimeParticleUpdateCS = null;
+            updateKernel = -1;
+            allocatedParticleCount = default;
+            allocatedEmitterSize = default;
+        }
+
+        private static void DestroyOwnedObject(
+            UnityEngine.Object ownedObject,
+            bool releaseRenderTexture = false)
+        {
+            if (ownedObject == null)
+            {
+                return;
+            }
+
+            if (releaseRenderTexture && ownedObject is RenderTexture renderTexture)
+            {
+                renderTexture.Release();
+            }
+
+            if (Application.isPlaying)
+            {
+                Destroy(ownedObject);
+            }
+            else
+            {
+                DestroyImmediate(ownedObject);
+            }
+        }
+
+        private bool FailInitialization(string message)
+        {
+            if (!initializationFailed)
+            {
+                Debug.LogWarning(message, this);
+            }
+
+            initializationFailed = true;
+            return false;
+        }
+
+        private void SetRendererVisible(bool visible)
+        {
+            if (meshRenderer != null)
+            {
+                meshRenderer.enabled = visible;
+            }
+        }
+
+        private void SanitizeSettings()
+        {
+            maxParticlesCount.x = Mathf.Clamp(
+                Mathf.ClosestPowerOfTwo(maxParticlesCount.x),
+                ThreadGroupSize,
+                2048);
+            maxParticlesCount.y = Mathf.Clamp(
+                Mathf.ClosestPowerOfTwo(maxParticlesCount.y),
+                ThreadGroupSize,
+                2048);
+            emitterSize.x = Mathf.Max(0.01f, emitterSize.x);
+            emitterSize.y = Mathf.Max(0.01f, emitterSize.y);
+            baseFallSpeed = Mathf.Max(0f, baseFallSpeed);
+            rainDensity = Mathf.Max(0f, rainDensity);
+            rainWindZRotation = Mathf.Clamp(rainWindZRotation, -45f, 45f);
+        }
+
+        private Mesh GenerateParticlesMeshInternal(
+            int countX,
+            int countZ,
+            Vector2 meshSize)
+        {
+            var mesh = new Mesh
+            {
+                name = "SimplifiedGPUParticleMesh",
+                indexFormat = countX * countZ > 65535
+                    ? IndexFormat.UInt32
+                    : IndexFormat.UInt16
+            };
+
+            var allVertices = new Vector3[countX * countZ * 4];
+            var allTriangles = new int[countX * countZ * 6];
+            var allUVs = new Vector2[countX * countZ * 4];
+            var allColors = new Color[countX * countZ * 4];
 
             float xStep = meshSize.x / countX;
             float zStep = meshSize.y / countZ;
             int vertexIndex = 0;
-            int triIndex = 0;
+            int triangleIndex = 0;
 
-            // 遍历所有粒子，生成每个粒子的Quad
             for (int z = 0; z < countZ; z++)
             {
                 for (int x = 0; x < countX; x++)
                 {
-                    // 计算粒子中心位置
                     Vector3 particleCenter = new Vector3(
-                        x * xStep - meshSize.x / 2,
-                        0,
-                        z * zStep - meshSize.y / 2
-                    );
+                        x * xStep - meshSize.x * 0.5f,
+                        0f,
+                        z * zStep - meshSize.y * 0.5f);
+                    allVertices[vertexIndex] = particleCenter;
+                    allVertices[vertexIndex + 1] = particleCenter;
+                    allVertices[vertexIndex + 2] = particleCenter;
+                    allVertices[vertexIndex + 3] = particleCenter;
 
-                    // 赋值顶点
-                    allVertices[vertexIndex + 0] = particleCenter; // 左下
-                    allVertices[vertexIndex + 1] = particleCenter; // 右下
-                    allVertices[vertexIndex + 2] = particleCenter; // 左上
-                    allVertices[vertexIndex + 3] = particleCenter; // 右上
+                    allUVs[vertexIndex] = new Vector2(0f, 0f);
+                    allUVs[vertexIndex + 1] = new Vector2(1f, 0f);
+                    allUVs[vertexIndex + 2] = new Vector2(0f, 1f);
+                    allUVs[vertexIndex + 3] = new Vector2(1f, 1f);
 
-                    // 赋值UV
-                    allUVs[vertexIndex + 0] = new Vector2(0, 0);
-                    allUVs[vertexIndex + 1] = new Vector2(1, 0);
-                    allUVs[vertexIndex + 2] = new Vector2(0, 1);
-                    allUVs[vertexIndex + 3] = new Vector2(1, 1);
-
-                    // 存储粒子在纹理中的UV坐标（用Color通道传递给Shader）
-                    Color particleUV = new Color((float)x / countX, (float)z / countZ, 0, Random.value);
-                    allColors[vertexIndex + 0] = particleUV;
+                    var particleUV = new Color(
+                        (float)x / countX,
+                        (float)z / countZ,
+                        0f,
+                        Random.value);
+                    allColors[vertexIndex] = particleUV;
                     allColors[vertexIndex + 1] = particleUV;
                     allColors[vertexIndex + 2] = particleUV;
                     allColors[vertexIndex + 3] = particleUV;
 
-                    // 赋值三角面索引
-                    int baseTriIndex = vertexIndex;
-                    allTris[triIndex + 0] = baseTriIndex + 0;
-                    allTris[triIndex + 1] = baseTriIndex + 2;
-                    allTris[triIndex + 2] = baseTriIndex + 1;
-                    allTris[triIndex + 3] = baseTriIndex + 1;
-                    allTris[triIndex + 4] = baseTriIndex + 2;
-                    allTris[triIndex + 5] = baseTriIndex + 3;
+                    allTriangles[triangleIndex] = vertexIndex;
+                    allTriangles[triangleIndex + 1] = vertexIndex + 2;
+                    allTriangles[triangleIndex + 2] = vertexIndex + 1;
+                    allTriangles[triangleIndex + 3] = vertexIndex + 1;
+                    allTriangles[triangleIndex + 4] = vertexIndex + 2;
+                    allTriangles[triangleIndex + 5] = vertexIndex + 3;
 
                     vertexIndex += 4;
-                    triIndex += 6;
+                    triangleIndex += 6;
                 }
             }
 
-            // 赋值网格数据
             mesh.vertices = allVertices;
-            mesh.triangles = allTris;
+            mesh.triangles = allTriangles;
             mesh.uv = allUVs;
             mesh.colors = allColors;
-
-            // 重新计算包围盒
             mesh.RecalculateBounds();
-            mesh.bounds = new Bounds(Vector3.zero, new Vector3(meshSize.x, 100, meshSize.y));
-
+            mesh.bounds = new Bounds(
+                Vector3.zero,
+                new Vector3(meshSize.x, 100f, meshSize.y));
             return mesh;
         }
-        #endregion
 
-        #region 编辑器辅助功能
 #if UNITY_EDITOR
-        // 绘制发射器范围Gizmos
         private void OnDrawGizmos()
         {
-            Gizmos.color = new Color(0, 0.8f, 1, 0.5f);
-            Gizmos.DrawWireCube(transform.position, new Vector3(emitterSize.x, 0, emitterSize.y));
+            Gizmos.color = new Color(0f, 0.8f, 1f, 0.5f);
+            Gizmos.DrawWireCube(
+                transform.position,
+                new Vector3(emitterSize.x, 0f, emitterSize.y));
         }
 
-        // 参数校验（仅更新参数，不执行任何组件操作）
         private void OnValidate()
         {
-            if (IsEditorMode && rainyParticleUpdateCS != null)
-            {
-                rainyParticleUpdateCS.SetFloat("BaseFallSpeed", baseFallSpeed);
-                rainyParticleUpdateCS.SetVector("EmitterSize", emitterSize);
-                rainyParticleUpdateCS.SetInts("ParticleCount", maxParticlesCount.x, maxParticlesCount.y);
-                rainyParticleUpdateCS.SetFloat("RainDensity", rainDensity);
-            }
+            SanitizeSettings();
+            initializationFailed = false;
         }
 #endif
-        #endregion
     }
 }

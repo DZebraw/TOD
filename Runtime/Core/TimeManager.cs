@@ -146,7 +146,7 @@ namespace DawnTOD
                 timeOfDay = clampedTime;
                 
                 CheckTimeEvents();
-                //OnTimeChanged?.Invoke(NormalizedTime);
+                OnTimeChanged?.Invoke(timeOfDay / 24f);
             }
         }
 

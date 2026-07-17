@@ -29,6 +29,34 @@ float2 RaySphereIntersection(float3 rayOrigin, float3 rayDir, float3 sphereCente
 	}
 }
 
+// Keeps atmospheric integration outside the solid planet. The offset must be
+// large enough to survive float precision at Earth-sized radii.
+float3 ClampRayOriginAboveSphere(float3 rayOrigin, float3 sphereCenter, float sphereRadius, float surfaceOffset)
+{
+    float3 centerToOrigin = rayOrigin - sphereCenter;
+    float distanceToCenter = length(centerToOrigin);
+    float3 surfaceNormal = distanceToCenter > 0.0001
+        ? centerToOrigin / distanceToCenter
+        : float3(0.0, 1.0, 0.0);
+    float minimumDistance = sphereRadius + surfaceOffset;
+
+    return distanceToCenter < minimumDistance
+        ? sphereCenter + surfaceNormal * minimumDistance
+        : rayOrigin;
+}
+
+// Returns the first sphere intersection in front of the ray origin.
+float RaySphereNearestForwardIntersection(float2 intersections)
+{
+    if (intersections.x >= 0.0)
+        return intersections.x;
+
+    if (intersections.y >= 0.0)
+        return intersections.y;
+
+    return -1.0;
+}
+
 //-----------------------------------------------------------------------------------------
 // Phase Functions
 //-----------------------------------------------------------------------------------------
