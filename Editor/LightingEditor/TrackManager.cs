@@ -85,11 +85,11 @@ namespace DawnTODEditor
 
             CreateTrackGroup("Fog", BuiltinType.Fog, ref trackIndex,
                 new[] {
-                    ("Height", activePreset.fogHeightCurve),
-                    ("Distance", activePreset.fogDistanceCurve)
+                    ("Base Height (m)", activePreset.fogHeightCurve),
+                    ("Mean Free Path (m)", activePreset.fogDistanceCurve)
                 },
                 new[] {
-                    ("FogColor", activePreset.fogColorGradient)
+                    ("Albedo", activePreset.fogColorGradient)
                 });
 
             CreateTrackGroup("Exposure",BuiltinType.Exposure,ref trackIndex,

@@ -13,6 +13,7 @@ namespace DawnTODEditor
         private const string InstallMenuPath =
             "MagicDawn/TOD/Install URP Fog Renderer Feature";
         private const string FogShaderName = "Hidden/DawnTOD/PostProcessFog";
+        private const string FeatureDisplayName = "Dawn TOD Fog";
 
         [MenuItem(InstallMenuPath, false, 120)]
         private static void InstallFromMenu()
@@ -54,10 +55,18 @@ namespace DawnTODEditor
                 return false;
             }
 
-            if (rendererData.rendererFeatures.Any(
-                    feature => feature is DawnFogRendererFeature &&
-                               !string.IsNullOrEmpty(AssetDatabase.GetAssetPath(feature))))
+            DawnFogRendererFeature installedFeature = rendererData.rendererFeatures
+                .OfType<DawnFogRendererFeature>()
+                .FirstOrDefault(
+                    feature => !string.IsNullOrEmpty(AssetDatabase.GetAssetPath(feature)));
+            if (installedFeature != null)
             {
+                if (installedFeature.name != FeatureDisplayName)
+                {
+                    installedFeature.name = FeatureDisplayName;
+                    EditorUtility.SetDirty(installedFeature);
+                    AssetDatabase.SaveAssetIfDirty(installedFeature);
+                }
                 return true;
             }
 
@@ -74,10 +83,11 @@ namespace DawnTODEditor
             RemoveTransientFogFeatures(rendererData);
 
             var feature = ScriptableObject.CreateInstance<DawnFogRendererFeature>();
-            feature.name = "Dawn TOD Fog";
+            feature.name = FeatureDisplayName;
             Undo.RegisterCreatedObjectUndo(feature, "Install Dawn TOD Fog");
 
             AssetDatabase.AddObjectToAsset(feature, rendererData);
+            feature.name = FeatureDisplayName;
 
             Shader shader = Shader.Find(FogShaderName);
             var featureObject = new SerializedObject(feature);

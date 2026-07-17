@@ -10,6 +10,7 @@ namespace DawnTODEditor
         private const float TIME_RANGE = 24f;
         private const int SLIDER_HEIGHT = 24;
         private const int CURVE_HEIGHT = 24;
+        private const float FIELD_LABEL_WIDTH = 130f;
         private static readonly int s_SliderControlID = "TODTimeSlider".GetHashCode();
 
         private SerializedProperty activePresetProp;
@@ -26,11 +27,11 @@ namespace DawnTODEditor
         private SerializedProperty moonColorGradientProp;
 #if USING_HDRP || USING_URP
         private SerializedProperty starEmissionCurveProp;
-#endif
-#if USING_HDRP
         private SerializedProperty fogHeightCurveProp;
         private SerializedProperty fogDistanceCurveProp;
         private SerializedProperty fogColorGradientProp;
+#endif
+#if USING_HDRP
         private SerializedProperty exposureCompensationCurveProp;
 #endif
         private SerializedProperty rainySpeedCurveProp;
@@ -42,7 +43,9 @@ namespace DawnTODEditor
         private bool showMoonSettings = true;
         private bool showSkySettings = true;
         private bool showFogSettings = true;
+#if USING_HDRP
         private bool showExposureSettings = true;
+#endif
         private bool showRainySettings = true;
         private DawnTODSystem debugPreviewSystem;
         private DawnWeatherController debugPreviewController;
@@ -81,11 +84,11 @@ namespace DawnTODEditor
             moonColorGradientProp = presetSerializedObject.FindProperty("moonColorGradient");
 #if USING_HDRP || USING_URP
             starEmissionCurveProp = presetSerializedObject.FindProperty("starEmissionCurve");
-#endif
-#if USING_HDRP
             fogHeightCurveProp = presetSerializedObject.FindProperty("fogHeightCurve");
             fogDistanceCurveProp = presetSerializedObject.FindProperty("fogDistanceCurve");
             fogColorGradientProp = presetSerializedObject.FindProperty("fogColorGradient");
+#endif
+#if USING_HDRP
             exposureCompensationCurveProp = presetSerializedObject.FindProperty("exposureCompensationCurve");
 #endif
             rainySpeedCurveProp = presetSerializedObject.FindProperty("rainySpeedCurve");
@@ -160,17 +163,37 @@ namespace DawnTODEditor
                     EditorGUI.indentLevel--;
                 }
 #endif
-#if USING_HDRP
+#if USING_HDRP || USING_URP
                 //====Fog====
                 showFogSettings = EditorGUILayout.Foldout(showFogSettings, "Fog Settings", true);
                 if (showFogSettings)
                 {
                     EditorGUI.indentLevel++;
-                    DrawCurveField("Fog Height", fogHeightCurveProp, controller.NormalizedTime);
-                    DrawCurveField("Fog Distance", fogDistanceCurveProp, controller.NormalizedTime);
-                    DrawGradientField("Fog Color", fogColorGradientProp, controller.NormalizedTime);
+                    DrawCurveField("Base Height (m)", fogHeightCurveProp, controller.NormalizedTime);
+                    DrawCurveField("Mean Free Path (m)", fogDistanceCurveProp, controller.NormalizedTime);
+                    DrawGradientField("Albedo", fogColorGradientProp, controller.NormalizedTime);
+#if USING_URP
+                    if (DawnFogRendererFeatureEditorUtility.IsInstalled(out var rendererData))
+                    {
+                        EditorGUILayout.HelpBox(
+                            $"URP output is active on '{rendererData.name}'. Maximum Height, Maximum Fog Distance and Affect Sky remain Volume Profile overrides.",
+                            MessageType.Info);
+                    }
+                    else
+                    {
+                        EditorGUILayout.HelpBox(
+                            "These fog tracks are sampled, but the default URP Renderer Data is missing Dawn TOD Fog.",
+                            MessageType.Warning);
+                        if (GUILayout.Button("Install Dawn TOD Fog Renderer Feature"))
+                        {
+                            DawnFogRendererFeatureEditorUtility.InstallOnDefaultRenderer(out _);
+                        }
+                    }
+#endif
                     EditorGUI.indentLevel--;
                 }
+#endif
+#if USING_HDRP
                 //====Exposure====
                 showExposureSettings = EditorGUILayout.Foldout(showExposureSettings, "Exposure Settings", true);
                 if (showExposureSettings)
@@ -425,7 +448,7 @@ namespace DawnTODEditor
             if (curveProp == null) return;
 
             EditorGUILayout.BeginHorizontal();
-            EditorGUILayout.LabelField(label, GUILayout.Width(100));
+            EditorGUILayout.LabelField(label, GUILayout.Width(FIELD_LABEL_WIDTH));
 
             Rect curveRect = EditorGUILayout.GetControlRect(GUILayout.Height(CURVE_HEIGHT));
             EditorGUI.PropertyField(curveRect, curveProp, GUIContent.none);
@@ -445,7 +468,7 @@ namespace DawnTODEditor
             if (gradientProp == null) return;
 
             EditorGUILayout.BeginHorizontal();
-            EditorGUILayout.LabelField(label, GUILayout.Width(100));
+            EditorGUILayout.LabelField(label, GUILayout.Width(FIELD_LABEL_WIDTH));
 
             Rect gradientRect = EditorGUILayout.GetControlRect(GUILayout.Height(20));
             EditorGUI.PropertyField(gradientRect, gradientProp, GUIContent.none);
