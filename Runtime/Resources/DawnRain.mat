@@ -27,12 +27,19 @@ Material:
         m_Texture: {fileID: 2800000, guid: d280acd973289ee4eba8b62981f49487, type: 3}
         m_Scale: {x: 1, y: 1}
         m_Offset: {x: 0, y: 0}
+    - _ParticleStateRT:
+        m_Texture: {fileID: 0}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
     m_Ints: []
     m_Floats:
+    - _BaseFallSpeed: 40
     - _NearBlurDistance: 5
     - _NearBlurFalloff: 3
-    - _ParticleSize: 1
-    - _WindZRotation: 0
+    - _ParticleSize: 0.5
+    - _ParticleWidth: 0.01
+    - _RainIntensity: 0.05
+    - _WindHorizontalSpeed: 0
     m_Colors:
     - _RainColor: {r: 1, g: 1, b: 1, a: 1}
   m_BuildTextureStacks: []

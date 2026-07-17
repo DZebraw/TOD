@@ -24,8 +24,10 @@ namespace DawnTODEditor
         private SerializedProperty moonElevationProp;
         private SerializedProperty moonIntensityCurveProp;
         private SerializedProperty moonColorGradientProp;
-#if USING_HDRP
+#if USING_HDRP || USING_URP
         private SerializedProperty starEmissionCurveProp;
+#endif
+#if USING_HDRP
         private SerializedProperty fogHeightCurveProp;
         private SerializedProperty fogDistanceCurveProp;
         private SerializedProperty fogColorGradientProp;
@@ -70,8 +72,10 @@ namespace DawnTODEditor
             moonElevationProp = presetSerializedObject.FindProperty("moonElevationCurve");
             moonIntensityCurveProp = presetSerializedObject.FindProperty("moonIntensityCurve");
             moonColorGradientProp = presetSerializedObject.FindProperty("moonColorGradient");
-#if USING_HDRP
+#if USING_HDRP || USING_URP
             starEmissionCurveProp = presetSerializedObject.FindProperty("starEmissionCurve");
+#endif
+#if USING_HDRP
             fogHeightCurveProp = presetSerializedObject.FindProperty("fogHeightCurve");
             fogDistanceCurveProp = presetSerializedObject.FindProperty("fogDistanceCurve");
             fogColorGradientProp = presetSerializedObject.FindProperty("fogColorGradient");
@@ -136,7 +140,7 @@ namespace DawnTODEditor
                     DrawGradientField("Moon Color", moonColorGradientProp, controller.NormalizedTime);
                     EditorGUI.indentLevel--;
                 }
-#if USING_HDRP
+#if USING_HDRP || USING_URP
                 //====Sky====
                 showSkySettings = EditorGUILayout.Foldout(showSkySettings, "Sky Settings", true);
                 if (showSkySettings)
@@ -145,6 +149,8 @@ namespace DawnTODEditor
                     DrawCurveField("Star Emission", starEmissionCurveProp, controller.NormalizedTime);
                     EditorGUI.indentLevel--;
                 }
+#endif
+#if USING_HDRP
                 //====Fog====
                 showFogSettings = EditorGUILayout.Foldout(showFogSettings, "Fog Settings", true);
                 if (showFogSettings)

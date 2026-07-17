@@ -23,6 +23,10 @@
             #define ATMOSPHERE_GROUND_EPSILON 1.0
 
             uniform float3 _AtmosphereGroundColor;
+            TEXTURECUBE(_SpaceEmissionTexture);
+            SAMPLER(sampler_SpaceEmissionTexture);
+            uniform float _SpaceEmissionMultiplier;
+            uniform float4x4 _SpaceRotationMatrix;
             
             struct appdata
             {
@@ -41,6 +45,19 @@
                 o.positionCS = TransformObjectToHClip(v.vertex);
                 o.positionOS = v.vertex;
                 return o;
+            }
+
+            float3 SampleSpaceEmission(float3 rayDir)
+            {
+                if (_SpaceEmissionMultiplier <= 0.0)
+                    return 0.0;
+
+                float3 sampleDirection = mul((float3x3)_SpaceRotationMatrix, rayDir);
+                return SAMPLE_TEXTURECUBE_LOD(
+                    _SpaceEmissionTexture,
+                    sampler_SpaceEmissionTexture,
+                    sampleDirection,
+                    0).rgb * _SpaceEmissionMultiplier;
             }
             
             half4 frag(v2f i): SV_Target
@@ -62,7 +79,7 @@
                 float rayLength = RaySphereNearestForwardIntersection(atmosphereIntersections);
 
                 if (rayLength < 0.0)
-                    return float4(0.0, 0.0, 0.0, 1.0);
+                    return float4(SampleSpaceEmission(rayDir), 1.0);
 
                 float2 groundIntersections = RaySphereIntersection(rayStart, rayDir, planetCenter, _PlanetRadius);
                 float groundDistance = RaySphereNearestForwardIntersection(groundIntersections);
@@ -72,13 +89,17 @@
                     rayLength = groundDistance;
 
                 if (rayLength <= 0.0)
-                    return float4(hitsGround ? _AtmosphereGroundColor : 0.0, 1.0);
+                    return float4(
+                        hitsGround ? _AtmosphereGroundColor : SampleSpaceEmission(rayDir),
+                        1.0);
                 
                 float3 extinction;
                 
                 float3 inscattering = IntegrateInscattering(rayStart, rayDir, rayLength, planetCenter, 1, lightDir, SAMPLECOUNT_KSYBOX, extinction);
-                float3 background = hitsGround ? _AtmosphereGroundColor * extinction : 0.0;
-                return float4(background + inscattering, 1.0);
+                float3 background = hitsGround
+                    ? _AtmosphereGroundColor
+                    : SampleSpaceEmission(rayDir);
+                return float4(background * extinction + inscattering, 1.0);
             }
             ENDHLSL
             

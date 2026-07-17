@@ -8,6 +8,7 @@ float2 EmitterSize;
 float DeltaTime;
 
 float BaseFallSpeed;
+float WindHorizontalSpeed;
 float RainDensity;
 #define SPEED_VARIANCE 0.2
 #define INIT_Y_RANGE 50.0
@@ -28,8 +29,7 @@ void CSMain(uint3 id : SV_DispatchThreadID)
     if (id.x >= (uint)ParticleCount.x || id.y >= (uint)ParticleCount.y)
         return;
 
-    float2 uv = float2(id.x / (float)ParticleCount.x,
-                       id.y / (float)ParticleCount.y);
+    float2 uv = (float2(id.xy) + 0.5) / float2(ParticleCount);
 
     float particleRandom = rand(uv * 9999.0);
     if (particleRandom > RainDensity)
@@ -53,8 +53,14 @@ void CSMain(uint3 id : SV_DispatchThreadID)
         currentState = float4(randomPos.x, randomInitY, randomPos.y, -speedOffset);
     }
 
-    float currentSpeed = BaseFallSpeed * abs(currentState.w);
-    currentState.y -= currentSpeed * DeltaTime;
+    float speedFactor = abs(currentState.w);
+    currentState.x += WindHorizontalSpeed * speedFactor * DeltaTime;
+    currentState.y -= BaseFallSpeed * speedFactor * DeltaTime;
+
+    float emitterHalfWidth = EmitterSize.x * 0.5;
+    currentState.x = frac(
+        (currentState.x + emitterHalfWidth) / EmitterSize.x
+    ) * EmitterSize.x - emitterHalfWidth;
 
     if (currentState.y < -80.0)
     {

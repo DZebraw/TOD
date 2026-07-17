@@ -30,8 +30,6 @@ namespace DawnTODEditor
         private SerializedProperty sunLightProp;
         private SerializedProperty moonLightProp;
         private SerializedProperty rainParticleSystemProp;
-        private SerializedProperty shadowEnableIntensityProp;
-        private SerializedProperty shadowHysteresisProp;
 #if USING_HDRP
         private SerializedProperty hdrpVolumeProp;
 #endif
@@ -54,8 +52,6 @@ namespace DawnTODEditor
             sunLightProp = serializedObject.FindProperty("sunLight");
             moonLightProp = serializedObject.FindProperty("moonLight");
             rainParticleSystemProp = serializedObject.FindProperty("rainParticleSystem");
-            shadowEnableIntensityProp = serializedObject.FindProperty("shadowEnableIntensity");
-            shadowHysteresisProp = serializedObject.FindProperty("shadowHysteresis");
 #if USING_HDRP
             hdrpVolumeProp = serializedObject.FindProperty("hdrpVolume");
 #endif
@@ -637,12 +633,6 @@ namespace DawnTODEditor
                     serializedObject.Update();
                 }
             }
-            EditorGUILayout.PropertyField(
-                shadowEnableIntensityProp,
-                new GUIContent("Shadow Enable Intensity"));
-            EditorGUILayout.PropertyField(
-                shadowHysteresisProp,
-                new GUIContent("Shadow Hysteresis"));
 #if USING_HDRP
             EditorGUILayout.PropertyField(hdrpVolumeProp, new GUIContent("HDRP Volume"));
 #endif
@@ -662,7 +652,7 @@ namespace DawnTODEditor
             DrawHdrpVolumeDiagnostics(system);
 #elif USING_URP
             EditorGUILayout.HelpBox(
-                "URP currently consumes sun, moon and rain. Preset sky, fog and exposure fields are sampled for compatibility but have no URP scene output yet.",
+                "URP consumes sun, moon, atmospheric sky Star Emission and rain. Fog and exposure fields are sampled for compatibility but have no URP scene output yet.",
                 MessageType.Info);
 #else
             EditorGUILayout.HelpBox(

@@ -54,6 +54,7 @@ namespace DawnTOD
 
         private const double FallbackWarningIntervalSeconds = 5d;
         private const double RainOutputWarningIntervalSeconds = 5d;
+        private const float CelestialLightSwitchRelativeMargin = 0.05f;
 
         // ========== 时间控制 ==========
         [SerializeField] private float sunriseTime = 6f;
@@ -89,13 +90,6 @@ namespace DawnTOD
         [Tooltip("Scene rain output controlled by the blended precipitation result.")]
         [SerializeField] private DawnGPUParticleSystem rainParticleSystem;
 
-        [Header("Celestial Light Shadows")]
-        [Min(0f)]
-        [Tooltip("Minimum light intensity required before a celestial light may start casting shadows.")]
-        [SerializeField] private float shadowEnableIntensity = 0.05f;
-        [Min(0f)]
-        [Tooltip("Intensity margin used for shadow disable and dominant-light switching hysteresis.")]
-        [SerializeField] private float shadowHysteresis = 0.01f;
         // ========== HDRP Volume ==========
 #if USING_HDRP
         [Tooltip("HDRP Volume")]
@@ -111,10 +105,19 @@ namespace DawnTOD
         private Fog fog;
         private Exposure exposure;
         private IndirectLightingController indirectLighting;
+#elif USING_URP
+        private RuntimeSkySetting runtimeSkySetting;
 #endif
 
         private bool isNight = false;
         private Light shadowOwner;
+        [NonSerialized] private Light cachedShadowSunLight;
+        [NonSerialized] private Light cachedShadowMoonLight;
+        [NonSerialized] private LightShadows cachedSunShadowMode;
+        [NonSerialized] private LightShadows cachedMoonShadowMode;
+        [NonSerialized] private Light previousRenderSettingsSun;
+        [NonSerialized] private bool celestialShadowStateInitialized;
+        [NonSerialized] private bool renderSettingsSunCaptured;
         [NonSerialized] private DawnGPUParticleSystem resolvedLegacyRainParticleSystem;
         [NonSerialized] private bool rainOutputResolutionAttempted;
 
@@ -132,23 +135,6 @@ namespace DawnTOD
                 rainOutputResolutionAttempted = value != null;
                 nextRainOutputWarningTime = 0d;
             }
-        }
-        public float ShadowEnableIntensity
-        {
-            get => shadowEnableIntensity;
-            set
-            {
-                shadowEnableIntensity = Mathf.Max(0f, value);
-                shadowHysteresis = Mathf.Clamp(
-                    shadowHysteresis,
-                    0f,
-                    shadowEnableIntensity);
-            }
-        }
-        public float ShadowHysteresis
-        {
-            get => shadowHysteresis;
-            set => shadowHysteresis = Mathf.Clamp(value, 0f, shadowEnableIntensity);
         }
         public DawnWeatherPreset FallbackPreset
         {
@@ -267,11 +253,6 @@ namespace DawnTOD
 #if USING_HDRP
             CacheVolumeComponents();
 #endif
-            shadowEnableIntensity = Mathf.Max(0f, shadowEnableIntensity);
-            shadowHysteresis = Mathf.Clamp(
-                shadowHysteresis,
-                0f,
-                shadowEnableIntensity);
             resolvedLegacyRainParticleSystem = rainParticleSystem;
             rainOutputResolutionAttempted = rainParticleSystem != null;
             nextRainOutputWarningTime = 0d;
@@ -289,8 +270,14 @@ namespace DawnTOD
             }
         }
 
+        private void OnDisable()
+        {
+            ReleaseCelestialShadowState();
+        }
+
         private void OnDestroy()
         {
+            ReleaseCelestialShadowState();
             UnsubscribeTimeManager();
             if (_instance == this)
             {
@@ -724,6 +711,13 @@ namespace DawnTOD
             }
 
             UpdateCelestialShadows();
+#if USING_URP
+            RuntimeSkySetting skySetting = ResolveRuntimeSkySetting();
+            if (skySetting != null)
+            {
+                skySetting.SetSpaceEmissionMultiplier(mixedResult.StarEmission);
+            }
+#endif
 #if USING_HDRP
             // ========== 应用天空属性 ==========
             if (physicalSky != null)
@@ -760,6 +754,18 @@ namespace DawnTOD
             // ========== 应用雨水混合结果 ==========
             ApplyRainMixedResult();
         }
+
+#if USING_URP
+        private RuntimeSkySetting ResolveRuntimeSkySetting()
+        {
+            if (runtimeSkySetting == null)
+            {
+                runtimeSkySetting = GetComponent<RuntimeSkySetting>();
+            }
+
+            return runtimeSkySetting;
+        }
+#endif
 
         /// <summary>
         /// 刷新天气混合系统（供编辑器面板调用，实时同步修改）
@@ -956,6 +962,8 @@ namespace DawnTOD
 
         private void UpdateCelestialShadows()
         {
+            EnsureCelestialShadowState();
+
             if (shadowOwner != sunLight && shadowOwner != moonLight)
             {
                 shadowOwner = null;
@@ -964,10 +972,6 @@ namespace DawnTOD
             float sunIntensity = GetEffectiveIntensity(sunLight);
             float moonIntensity = GetEffectiveIntensity(moonLight);
             Light candidate = sunIntensity >= moonIntensity ? sunLight : moonLight;
-            float candidateIntensity = Mathf.Max(sunIntensity, moonIntensity);
-            float disableIntensity = Mathf.Max(
-                0f,
-                shadowEnableIntensity - shadowHysteresis);
 
             if (shadowOwner != null)
             {
@@ -976,27 +980,106 @@ namespace DawnTOD
                 float competitorIntensity = ownerIsSun ? moonIntensity : sunIntensity;
                 Light competitor = ownerIsSun ? moonLight : sunLight;
 
-                if (ownerIntensity < disableIntensity)
-                {
-                    shadowOwner = null;
-                }
-                else if (competitor != null &&
-                         competitorIntensity >= shadowEnableIntensity &&
-                         competitorIntensity > ownerIntensity + shadowHysteresis)
+                if (competitor != null &&
+                    competitorIntensity >
+                    ownerIntensity * (1f + CelestialLightSwitchRelativeMargin))
                 {
                     shadowOwner = competitor;
                 }
             }
 
-            if (shadowOwner == null &&
-                candidate != null &&
-                candidateIntensity >= shadowEnableIntensity)
+            if (shadowOwner == null && candidate != null)
             {
                 shadowOwner = candidate;
             }
 
-            ApplyShadowMode(sunLight, shadowOwner == sunLight);
-            ApplyShadowMode(moonLight, shadowOwner == moonLight);
+            ApplyShadowMode(
+                sunLight,
+                shadowOwner == sunLight ? cachedSunShadowMode : LightShadows.None);
+            ApplyShadowMode(
+                moonLight,
+                shadowOwner == moonLight ? cachedMoonShadowMode : LightShadows.None);
+            SynchronizeMainDirectionalLight();
+        }
+
+        private void EnsureCelestialShadowState()
+        {
+            if (celestialShadowStateInitialized &&
+                cachedShadowSunLight == sunLight &&
+                cachedShadowMoonLight == moonLight)
+            {
+                return;
+            }
+
+            RestoreCachedShadowModes();
+            cachedShadowSunLight = sunLight;
+            cachedShadowMoonLight = moonLight;
+            cachedSunShadowMode = GetConfiguredShadowMode(sunLight);
+            cachedMoonShadowMode = GetConfiguredShadowMode(moonLight);
+
+            // Older TOD versions serialized whichever inactive light as None. If one
+            // celestial light still has a configured mode, use it to recover the other.
+            if (cachedSunShadowMode == LightShadows.None &&
+                cachedMoonShadowMode != LightShadows.None)
+            {
+                cachedSunShadowMode = cachedMoonShadowMode;
+            }
+            else if (cachedMoonShadowMode == LightShadows.None &&
+                     cachedSunShadowMode != LightShadows.None)
+            {
+                cachedMoonShadowMode = cachedSunShadowMode;
+            }
+
+            if (!renderSettingsSunCaptured)
+            {
+                previousRenderSettingsSun = RenderSettings.sun;
+                renderSettingsSunCaptured = true;
+            }
+
+            celestialShadowStateInitialized = true;
+        }
+
+        private void SynchronizeMainDirectionalLight()
+        {
+            if (shadowOwner != null)
+            {
+                RenderSettings.sun = shadowOwner;
+            }
+            else if (renderSettingsSunCaptured)
+            {
+                RenderSettings.sun = previousRenderSettingsSun;
+            }
+        }
+
+        private void ReleaseCelestialShadowState()
+        {
+            Light managedSun = cachedShadowSunLight;
+            Light managedMoon = cachedShadowMoonLight;
+            Light managedOwner = shadowOwner;
+
+            RestoreCachedShadowModes();
+            if (renderSettingsSunCaptured &&
+                (RenderSettings.sun == managedOwner ||
+                 RenderSettings.sun == managedSun ||
+                 RenderSettings.sun == managedMoon))
+            {
+                RenderSettings.sun = previousRenderSettingsSun;
+            }
+
+            shadowOwner = null;
+            previousRenderSettingsSun = null;
+            renderSettingsSunCaptured = false;
+            celestialShadowStateInitialized = false;
+        }
+
+        private void RestoreCachedShadowModes()
+        {
+            ApplyShadowMode(cachedShadowSunLight, cachedSunShadowMode);
+            ApplyShadowMode(cachedShadowMoonLight, cachedMoonShadowMode);
+            cachedShadowSunLight = null;
+            cachedShadowMoonLight = null;
+            cachedSunShadowMode = LightShadows.None;
+            cachedMoonShadowMode = LightShadows.None;
         }
 
         private static float GetEffectiveIntensity(Light light)
@@ -1009,11 +1092,16 @@ namespace DawnTOD
             return Mathf.Max(0f, light.intensity);
         }
 
-        private static void ApplyShadowMode(Light light, bool enabled)
+        private static LightShadows GetConfiguredShadowMode(Light light)
+        {
+            return light != null ? light.shadows : LightShadows.None;
+        }
+
+        private static void ApplyShadowMode(Light light, LightShadows shadowMode)
         {
             if (light != null)
             {
-                light.shadows = enabled ? LightShadows.Soft : LightShadows.None;
+                light.shadows = shadowMode;
             }
         }
 
@@ -1065,6 +1153,11 @@ namespace DawnTOD
         /// <returns>白天返回太阳光，夜间返回月光，如果都不存在则返回null</returns>
         public Light GetMainDirectionalLight()
         {
+            if (shadowOwner == sunLight || shadowOwner == moonLight)
+            {
+                return shadowOwner;
+            }
+
             if (sunLight == null)
             {
                 return moonLight;

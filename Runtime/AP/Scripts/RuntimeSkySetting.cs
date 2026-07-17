@@ -9,6 +9,8 @@ namespace DawnTOD
     public class RuntimeSkySetting : MonoBehaviour
 
     {
+        private const float SpaceEmissionTrackMaximum = 1000f;
+
         [Header("ScatteringSetting")]
         private float distanceScale = 1.0f;
         public Vector3 rCoef = new Vector3(5.8f, 13.5f, 33.1f);
@@ -33,6 +35,17 @@ namespace DawnTOD
         public float planetRadius = 6357000.0f;
         public float atmosphereHeight = 12000f;
         public float surfaceHeight;
+
+        [Header("Space")]
+        [Tooltip("HDR cubemap rendered behind the atmosphere, equivalent to HDRP Space Emission Texture.")]
+        public Cubemap spaceEmissionTexture;
+
+        [Range(0f, SpaceEmissionTrackMaximum)]
+        [Tooltip("Star Emission track value. URP maps 0-1000 here to a 0-1 shader multiplier.")]
+        public float spaceEmissionMultiplier = SpaceEmissionTrackMaximum;
+
+        [Tooltip("Euler rotation applied to the space emission cubemap.")]
+        public Vector3 spaceRotation;
 
 
         [Header("Particles")]
@@ -89,7 +102,7 @@ namespace DawnTOD
         private Vector3[] m_FrustumCorners = new Vector3[4];
         private Vector4[] m_FrustumCornersVec4 = new Vector4[4];
 
-        private void UpdateParams()
+        private void UpdateParams(DawnAtmosphereVolume volume)
         {
             Shader.DisableKeyword(ScatteringKeys.kDebugExtinction);
             Shader.DisableKeyword(ScatteringKeys.kDebugInscattering);
@@ -98,30 +111,49 @@ namespace DawnTOD
             //地球的数据：
             //private readonly Vector4 _rayleighSct = new Vector4(5.8f, 13.5f, 33.1f, 0.0f) * 0.000001f; 
             //private readonly Vector4 _mieSct = new Vector4(2.0f, 2.0f, 2.0f, 0.0f) * 0.00001f; 
-            var rCoef = this.rCoef * 0.000001f;
-            var mCoef = this.mCoef * 0.00001f;
-            Shader.SetGlobalVector(ScatteringKeys.kScatteringR, rCoef * rScatterStrength);
-            Shader.SetGlobalVector(ScatteringKeys.kScatteringM, mCoef * mScatterStrength);
-            Shader.SetGlobalVector(ScatteringKeys.kExtinctionR, rCoef * rExtinctionStrength);
-            Shader.SetGlobalVector(ScatteringKeys.kExtinctionM, mCoef * mExtinctionStrength);
-            Shader.SetGlobalFloat(ScatteringKeys.kMieG, mieG);
+            Vector3 effectiveRayleighCoef = Resolve(volume, volume?.rayleighCoefficients, rCoef);
+            Vector3 effectiveMieCoef = Resolve(volume, volume?.mieCoefficients, mCoef);
+            float effectiveRayleighScatter = Resolve(volume, volume?.rayleighScatterStrength, rScatterStrength);
+            float effectiveMieScatter = Resolve(volume, volume?.mieScatterStrength, mScatterStrength);
+            float effectiveRayleighExtinction = Resolve(volume, volume?.rayleighExtinctionStrength, rExtinctionStrength);
+            float effectiveMieExtinction = Resolve(volume, volume?.mieExtinctionStrength, mExtinctionStrength);
+            float effectiveMieG = Resolve(volume, volume?.mieAnisotropy, mieG);
+
+            effectiveRayleighCoef *= 0.000001f;
+            effectiveMieCoef *= 0.00001f;
+            Shader.SetGlobalVector(ScatteringKeys.kScatteringR, effectiveRayleighCoef * effectiveRayleighScatter);
+            Shader.SetGlobalVector(ScatteringKeys.kScatteringM, effectiveMieCoef * effectiveMieScatter);
+            Shader.SetGlobalVector(ScatteringKeys.kExtinctionR, effectiveRayleighCoef * effectiveRayleighExtinction);
+            Shader.SetGlobalVector(ScatteringKeys.kExtinctionM, effectiveMieCoef * effectiveMieExtinction);
+            Shader.SetGlobalFloat(ScatteringKeys.kMieG, effectiveMieG);
         }
 
-        private void SetCommonParams()
+        private void SetCommonParams(DawnAtmosphereVolume volume)
         {
 
             FindAndSetDirectionalLight();
             
             Shader.SetGlobalTexture(ScatteringKeys.kIntergalCPDensityLUT, m_IntegrateCPDensityLUT);
             //Shader.SetGlobalTexture(Keys.kSunOnSurface, m_SunOnSurfaceLUT);
-            Shader.SetGlobalVector(ScatteringKeys.kDensityScaleHeight, new Vector4(rDensityScale, mDensityScale));
+            float effectiveRayleighDensity = Resolve(volume, volume?.rayleighDensityScale, rDensityScale);
+            float effectiveMieDensity = Resolve(volume, volume?.mieDensityScale, mDensityScale);
+            Shader.SetGlobalVector(
+                ScatteringKeys.kDensityScaleHeight,
+                new Vector4(effectiveRayleighDensity, effectiveMieDensity));
             Shader.SetGlobalFloat(ScatteringKeys.kPlanetRadius, planetRadius);
             Shader.SetGlobalFloat(ScatteringKeys.kAtmosphereHeight, atmosphereHeight);
             Shader.SetGlobalFloat(ScatteringKeys.kSurfaceHeight, surfaceHeight);
-            Shader.SetGlobalColor(ScatteringKeys.kAtmosphereGroundColor, atmosphereGroundColor);
+            Shader.SetGlobalColor(
+                ScatteringKeys.kAtmosphereGroundColor,
+                Resolve(volume, volume?.groundColor, atmosphereGroundColor));
+            ApplySpaceParams(volume);
             Shader.SetGlobalVector(ScatteringKeys.kIncomingLight, lightFromOuterSpace);
-            Shader.SetGlobalFloat(ScatteringKeys.kSunIntensity, sunDiskScale);
-            Shader.SetGlobalFloat(ScatteringKeys.kSunMieG, sunMieG);
+            Shader.SetGlobalFloat(
+                ScatteringKeys.kSunIntensity,
+                Resolve(volume, volume?.sunDiskScale, sunDiskScale));
+            Shader.SetGlobalFloat(
+                ScatteringKeys.kSunMieG,
+                Resolve(volume, volume?.sunMieAnisotropy, sunMieG));
             
             if (m_Camera == null)
             {
@@ -142,9 +174,97 @@ namespace DawnTOD
             }
         }
 
+        private void ApplySpaceParams(DawnAtmosphereVolume volume)
+        {
+            Cubemap effectiveTexture = Resolve(volume, volume?.spaceEmissionTexture, spaceEmissionTexture);
+            float effectiveEmission = Resolve(volume, volume?.spaceEmission, spaceEmissionMultiplier);
+            Vector3 effectiveRotation = Resolve(volume, volume?.spaceRotation, spaceRotation);
+
+            Shader.SetGlobalTexture(ScatteringKeys.kSpaceEmissionTexture, effectiveTexture);
+            Shader.SetGlobalFloat(
+                ScatteringKeys.kSpaceEmissionMultiplier,
+                effectiveTexture != null ? NormalizeSpaceEmission(effectiveEmission) : 0f);
+            Shader.SetGlobalMatrix(
+                ScatteringKeys.kSpaceRotationMatrix,
+                Matrix4x4.Rotate(Quaternion.Inverse(Quaternion.Euler(SanitizeEuler(effectiveRotation)))));
+        }
+
+        public void SetSpaceEmissionMultiplier(float multiplier)
+        {
+            spaceEmissionMultiplier = SanitizeSpaceEmission(multiplier);
+            ApplySpaceParams(GetActiveAtmosphereVolume());
+        }
+
+        private static DawnAtmosphereVolume GetActiveAtmosphereVolume()
+        {
+#if USING_URP
+            VolumeStack stack = VolumeManager.instance.stack;
+            return stack != null ? stack.GetComponent<DawnAtmosphereVolume>() : null;
+#else
+            return null;
+#endif
+        }
+
+        private static float Resolve(
+            DawnAtmosphereVolume volume,
+            VolumeParameter<float> parameter,
+            float fallback)
+        {
+            return CanOverride(volume, parameter) ? parameter.value : fallback;
+        }
+
+        private static Vector3 Resolve(
+            DawnAtmosphereVolume volume,
+            VolumeParameter<Vector3> parameter,
+            Vector3 fallback)
+        {
+            return CanOverride(volume, parameter) ? parameter.value : fallback;
+        }
+
+        private static Color Resolve(
+            DawnAtmosphereVolume volume,
+            VolumeParameter<Color> parameter,
+            Color fallback)
+        {
+            return CanOverride(volume, parameter) ? parameter.value : fallback;
+        }
+
+        private static Cubemap Resolve(
+            DawnAtmosphereVolume volume,
+            VolumeParameter<Texture> parameter,
+            Cubemap fallback)
+        {
+            return CanOverride(volume, parameter) ? parameter.value as Cubemap : fallback;
+        }
+
+        private static bool CanOverride(DawnAtmosphereVolume volume, VolumeParameter parameter)
+        {
+            return volume != null && volume.active && parameter != null && parameter.overrideState;
+        }
+
+        private static float SanitizeSpaceEmission(float multiplier)
+        {
+            return float.IsNaN(multiplier) || float.IsInfinity(multiplier)
+                ? 0f
+                : Mathf.Clamp(multiplier, 0f, SpaceEmissionTrackMaximum);
+        }
+
+        private static float NormalizeSpaceEmission(float multiplier)
+        {
+            return SanitizeSpaceEmission(multiplier) / SpaceEmissionTrackMaximum;
+        }
+
+        private static Vector3 SanitizeEuler(Vector3 euler)
+        {
+            euler.x = float.IsNaN(euler.x) || float.IsInfinity(euler.x) ? 0f : euler.x;
+            euler.y = float.IsNaN(euler.y) || float.IsInfinity(euler.y) ? 0f : euler.y;
+            euler.z = float.IsNaN(euler.z) || float.IsInfinity(euler.z) ? 0f : euler.z;
+            return euler;
+        }
 
 
-        private void PreComputeAll()
+
+        private void PreComputeAll(DawnAtmosphereVolume volume)
         {
             if (!EnsureComputerShader())
             {
@@ -159,7 +279,7 @@ namespace DawnTOD
 
             m_LoggedMissingComputerShader = false;
 
-            SetCommonParams();
+            SetCommonParams(volume);
             ComputeIntegrateCPdensity();
             ComputeSunOnSurface();
             ComputeInScattering();
@@ -332,6 +452,13 @@ namespace DawnTOD
         private void OnEnable()
         {
             EnsureComputerShader();
+            ApplySpaceParams(GetActiveAtmosphereVolume());
+        }
+
+        private void OnValidate()
+        {
+            spaceEmissionMultiplier = SanitizeSpaceEmission(spaceEmissionMultiplier);
+            ApplySpaceParams(GetActiveAtmosphereVolume());
         }
 
         private void SetSkyboxMaterial()
@@ -387,14 +514,16 @@ namespace DawnTOD
         private void OnDisable()
         {
             if (m_IntegrateCPDensityLUT != null) m_IntegrateCPDensityLUT.Release();
+            Shader.SetGlobalFloat(ScatteringKeys.kSpaceEmissionMultiplier, 0f);
         }
 
         private void Update()
         {
+            DawnAtmosphereVolume atmosphereVolume = GetActiveAtmosphereVolume();
             FindAndSetDirectionalLight();
-            UpdateParams();
-            SetCommonParams();
-            PreComputeAll();
+            UpdateParams(atmosphereVolume);
+            SetCommonParams(atmosphereVolume);
+            PreComputeAll(atmosphereVolume);
             //UpdateMainLight();
             UpdateAmbient();
         }

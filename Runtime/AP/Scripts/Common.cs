@@ -19,6 +19,9 @@ namespace DawnTOD
         public static readonly int kAtmosphereHeight = Shader.PropertyToID("_AtmosphereHeight");
         public static readonly int kSurfaceHeight = Shader.PropertyToID("_SurfaceHeight");
         public static readonly int kAtmosphereGroundColor = Shader.PropertyToID("_AtmosphereGroundColor");
+        public static readonly int kSpaceEmissionTexture = Shader.PropertyToID("_SpaceEmissionTexture");
+        public static readonly int kSpaceEmissionMultiplier = Shader.PropertyToID("_SpaceEmissionMultiplier");
+        public static readonly int kSpaceRotationMatrix = Shader.PropertyToID("_SpaceRotationMatrix");
         public static readonly int kDistanceScale = Shader.PropertyToID("_DistanceScale");
         //public static readonly int kSunOnSurface = Shader.PropertyToID("_SunOnSurface");
         public static readonly int kScatteringR = Shader.PropertyToID("_ScatteringR");

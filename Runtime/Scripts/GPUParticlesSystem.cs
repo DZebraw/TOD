@@ -16,6 +16,9 @@ namespace DawnTOD
         private const string UpdateKernelName = "CSMain";
         private const int ThreadGroupSize = 8;
         private const float EditorDeltaTime = 0.02f;
+        private const float ParticleSpawnHeight = 50f;
+        private const float ParticleDespawnHeight = -80f;
+        private const float ParticleBoundsPadding = 2f;
 
         private static DawnGPUParticleSystem instance;
 
@@ -393,12 +396,16 @@ namespace DawnTOD
 
         private void InitializeGPUSimulation()
         {
+            float windHorizontalSpeed = CalculateWindHorizontalSpeed();
             runtimeParticleUpdateCS.SetInts(
                 "ParticleCount",
                 maxParticlesCount.x,
                 maxParticlesCount.y);
             runtimeParticleUpdateCS.SetVector("EmitterSize", emitterSize);
             runtimeParticleUpdateCS.SetFloat("BaseFallSpeed", baseFallSpeed);
+            runtimeParticleUpdateCS.SetFloat(
+                "WindHorizontalSpeed",
+                windHorizontalSpeed);
             runtimeParticleUpdateCS.SetFloat("RainDensity", rainDensity);
             runtimeParticleUpdateCS.SetTexture(
                 updateKernel,
@@ -419,7 +426,11 @@ namespace DawnTOD
                 return;
             }
 
+            float windHorizontalSpeed = CalculateWindHorizontalSpeed();
             runtimeParticleUpdateCS.SetFloat("BaseFallSpeed", baseFallSpeed);
+            runtimeParticleUpdateCS.SetFloat(
+                "WindHorizontalSpeed",
+                windHorizontalSpeed);
             runtimeParticleUpdateCS.SetFloat("RainDensity", rainDensity);
             runtimeParticleUpdateCS.SetFloat("DeltaTime", Mathf.Max(0f, deltaTime));
             runtimeParticleUpdateCS.SetTexture(
@@ -453,9 +464,16 @@ namespace DawnTOD
             materialProperties.SetTexture(
                 "_ParticleStateRT",
                 rainyParticleStateRT0);
-            materialProperties.SetFloat("_RainDensity", rainDensity);
-            materialProperties.SetFloat("_WindZRotation", rainWindZRotation);
+            materialProperties.SetFloat("_BaseFallSpeed", baseFallSpeed);
+            materialProperties.SetFloat(
+                "_WindHorizontalSpeed",
+                CalculateWindHorizontalSpeed());
             meshRenderer.SetPropertyBlock(materialProperties);
+        }
+
+        private float CalculateWindHorizontalSpeed()
+        {
+            return baseFallSpeed * Mathf.Tan(rainWindZRotation * Mathf.Deg2Rad);
         }
 
         private RenderTexture CreateStateTexture(string textureName)
@@ -609,8 +627,8 @@ namespace DawnTOD
                     allUVs[vertexIndex + 3] = new Vector2(1f, 1f);
 
                     var particleUV = new Color(
-                        (float)x / countX,
-                        (float)z / countZ,
+                        (x + 0.5f) / countX,
+                        (z + 0.5f) / countZ,
                         0f,
                         Random.value);
                     allColors[vertexIndex] = particleUV;
@@ -635,9 +653,17 @@ namespace DawnTOD
             mesh.uv = allUVs;
             mesh.colors = allColors;
             mesh.RecalculateBounds();
+            float verticalCenter =
+                (ParticleSpawnHeight + ParticleDespawnHeight) * 0.5f;
+            float verticalSize =
+                ParticleSpawnHeight - ParticleDespawnHeight
+                + ParticleBoundsPadding * 2f;
             mesh.bounds = new Bounds(
-                Vector3.zero,
-                new Vector3(meshSize.x, 100f, meshSize.y));
+                new Vector3(0f, verticalCenter, 0f),
+                new Vector3(
+                    meshSize.x + ParticleBoundsPadding * 2f,
+                    verticalSize,
+                    meshSize.y + ParticleBoundsPadding * 2f));
             return mesh;
         }
 
