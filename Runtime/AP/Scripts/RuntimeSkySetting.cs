@@ -13,53 +13,73 @@ namespace DawnTOD
 
         [Header("ScatteringSetting")]
         private float distanceScale = 1.0f;
+        [HideInInspector]
         public Vector3 rCoef = new Vector3(5.8f, 13.5f, 33.1f);
+        [HideInInspector]
         public float rScatterStrength = 1f;
+        [HideInInspector]
         public float rExtinctionStrength = 1f;
 
+        [HideInInspector]
         public Vector3 mCoef = new Vector3(2.0f, 2.0f, 2.0f);
+        [HideInInspector]
         public float mScatterStrength = 1f;
+        [HideInInspector]
         public float mExtinctionStrength = 1f;
+        [HideInInspector]
         public float mieG = 0.625f;
 
         [Header("Environments")]
         private Light mainLight;
 
+        [HideInInspector]
         [ColorUsage(false, true)]
         public Color lightFromOuterSpace = Color.white;
 
+        [HideInInspector]
         [ColorUsage(false, true)]
         [Tooltip("Color behind atmosphere rays that hit the planet surface. Black preserves the current lower-hemisphere appearance.")]
         public Color atmosphereGroundColor = Color.black;
 
+        [HideInInspector]
         public float planetRadius = 6357000.0f;
+        [HideInInspector]
         public float atmosphereHeight = 12000f;
+        [HideInInspector]
         public float surfaceHeight;
 
         [Header("Space")]
+        [HideInInspector]
         [Tooltip("HDR cubemap rendered behind the atmosphere, equivalent to HDRP Space Emission Texture.")]
         public Cubemap spaceEmissionTexture;
 
+        [HideInInspector]
         [Range(0f, SpaceEmissionTrackMaximum)]
         [Tooltip("Star Emission track value. URP maps 0-1000 here to a 0-1 shader multiplier.")]
         public float spaceEmissionMultiplier = SpaceEmissionTrackMaximum;
 
+        [HideInInspector]
         [Tooltip("Euler rotation applied to the space emission cubemap.")]
         public Vector3 spaceRotation;
 
 
         [Header("Particles")]
+        [HideInInspector]
         public float rDensityScale = 7994.0f;
 
+        [HideInInspector]
         public float mDensityScale = 1200;
 
         [Header("Sun Disk")]
+        [HideInInspector]
         public float sunDiskScale = 0.75f;
 
+        [HideInInspector]
         [Range(-1, 1)]
         public float sunMieG = 0.99f;
 
         [Header("Precomputation")]
+        [HideInInspector]
         public ComputeShader computerShader;
         private const string PrecomputationResourcePath = "Precomputation";
         private bool m_LoggedMissingComputerShader;

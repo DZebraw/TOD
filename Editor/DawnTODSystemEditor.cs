@@ -15,6 +15,8 @@ namespace DawnTODEditor
     {
         private const float HoursPerDay = 24f;
         private const float TimelineRowHeight = 20f;
+        private static readonly int TimelineControlId =
+            "DawnTODSystemWeatherTimeline".GetHashCode();
 
         private readonly List<WeatherContributionInfo> contributions =
             new List<WeatherContributionInfo>();
@@ -164,6 +166,61 @@ namespace DawnTODEditor
             SceneView.RepaintAll();
         }
 
+        internal static bool HandleTimelineInput(
+            DawnTODSystem system,
+            Rect timelineRect,
+            Event current,
+            int controlId)
+        {
+            if (current == null)
+            {
+                return false;
+            }
+
+            switch (current.GetTypeForControl(controlId))
+            {
+                case EventType.MouseDown:
+                    if (current.button != 0 ||
+                        system == null ||
+                        timelineRect.width <= 0f ||
+                        !timelineRect.Contains(current.mousePosition))
+                    {
+                        return false;
+                    }
+
+                    GUIUtility.hotControl = controlId;
+                    SetTimeFromTimeline(system, timelineRect, current.mousePosition.x);
+                    current.Use();
+                    return true;
+
+                case EventType.MouseDrag:
+                    if (current.button != 0 ||
+                        GUIUtility.hotControl != controlId ||
+                        system == null ||
+                        timelineRect.width <= 0f)
+                    {
+                        return false;
+                    }
+
+                    SetTimeFromTimeline(system, timelineRect, current.mousePosition.x);
+                    current.Use();
+                    return true;
+
+                case EventType.MouseUp:
+                    if (current.button != 0 || GUIUtility.hotControl != controlId)
+                    {
+                        return false;
+                    }
+
+                    GUIUtility.hotControl = 0;
+                    current.Use();
+                    return true;
+
+                default:
+                    return false;
+            }
+        }
+
         internal static int RescanControllersWithUndo(DawnTODSystem system)
         {
             if (system == null)
@@ -309,14 +366,14 @@ namespace DawnTODEditor
                 FormatHour(system.TimeOfDay),
                 EditorStyles.miniBoldLabel);
 
-            Event current = Event.current;
-            if (current.type == EventType.MouseDown &&
-                current.button == 0 &&
-                rect.Contains(current.mousePosition))
+            int controlId = GUIUtility.GetControlID(
+                TimelineControlId,
+                FocusType.Passive,
+                rect);
+            EditorGUIUtility.AddCursorRect(rect, MouseCursor.SlideArrow);
+            if (HandleTimelineInput(system, rect, Event.current, controlId))
             {
-                SetTimeFromTimeline(system, rect, current.mousePosition.x);
                 serializedObject.Update();
-                current.Use();
                 Repaint();
             }
         }
@@ -651,9 +708,22 @@ namespace DawnTODEditor
                 MessageType.Info);
             DrawHdrpVolumeDiagnostics(system);
 #elif USING_URP
-            EditorGUILayout.HelpBox(
-                "URP consumes sun, moon, atmospheric sky Star Emission and rain. Fog and exposure fields are sampled for compatibility but have no URP scene output yet.",
-                MessageType.Info);
+            if (DawnFogRendererFeatureEditorUtility.IsInstalled(out var rendererData))
+            {
+                EditorGUILayout.HelpBox(
+                    $"URP consumes sun, moon, atmospheric sky Star Emission, post-process Fog and rain. Dawn TOD Fog is installed on '{rendererData.name}'. Exposure still has no URP scene output.",
+                    MessageType.Info);
+            }
+            else
+            {
+                EditorGUILayout.HelpBox(
+                    "URP Fog tracks require Dawn TOD Fog on the default Renderer Data. Install it once to enable the depth-based post-process output. Exposure still has no URP scene output.",
+                    MessageType.Warning);
+                if (GUILayout.Button("Install Dawn TOD Fog Renderer Feature"))
+                {
+                    DawnFogRendererFeatureEditorUtility.InstallOnDefaultRenderer(out _);
+                }
+            }
 #else
             EditorGUILayout.HelpBox(
                 "Unknown render pipeline: directional lights and rain remain available; environment fields are skipped.",

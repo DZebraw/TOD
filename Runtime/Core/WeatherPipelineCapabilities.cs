@@ -49,7 +49,7 @@ namespace DawnTOD
                     WeatherRenderPipelineKind.Universal,
                     false,
                     true,
-                    false,
+                    true,
                     false);
 #else
                 return new WeatherPipelineCapabilities(

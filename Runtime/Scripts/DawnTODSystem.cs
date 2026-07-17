@@ -49,6 +49,10 @@ namespace DawnTOD
             new List<WeatherSampleContribution>();
         private WeatherBlendResult mixedResult;
         private bool hasMixedResult;
+#if UNITY_EDITOR
+        [NonSerialized] private DawnWeatherController debugWeatherPreviewController;
+        private const int DebugWeatherPreviewSourceIndex = -2;
+#endif
         private double nextFallbackWarningTime;
         private double nextRainOutputWarningTime;
 
@@ -107,6 +111,14 @@ namespace DawnTOD
         private IndirectLightingController indirectLighting;
 #elif USING_URP
         private RuntimeSkySetting runtimeSkySetting;
+        [NonSerialized] private GameObject runtimeFogVolumeObject;
+        [NonSerialized] private Volume runtimeFogVolume;
+        [NonSerialized] private VolumeProfile runtimeFogProfile;
+        [NonSerialized] private DawnFogVolume runtimeFogSettings;
+
+        private const float RuntimeFogVolumePriority = -10000f;
+        private const float DefaultFogHeightRange = 100f;
+        private const float DefaultMaximumFogDistance = 5000f;
 #endif
 
         private bool isNight = false;
@@ -177,6 +189,48 @@ namespace DawnTOD
             set => SetTime(value);
         }
 
+#if UNITY_EDITOR
+        internal DawnWeatherController DebugWeatherPreviewController =>
+            debugWeatherPreviewController;
+
+        internal bool IsDebugWeatherPreview(
+            DawnWeatherController controller)
+        {
+            return controller != null &&
+                   debugWeatherPreviewController == controller;
+        }
+
+        internal bool SetDebugWeatherPreview(
+            DawnWeatherController controller)
+        {
+            if (controller == null ||
+                !controller.isActiveAndEnabled ||
+                controller.ActivePreset == null)
+            {
+                return false;
+            }
+
+            debugWeatherPreviewController = controller;
+            RefreshWeatherBlendingSystem();
+            return IsDebugWeatherPreview(controller);
+        }
+
+        internal bool ClearDebugWeatherPreview(
+            DawnWeatherController expectedController = null)
+        {
+            if (debugWeatherPreviewController == null ||
+                (expectedController != null &&
+                 debugWeatherPreviewController != expectedController))
+            {
+                return false;
+            }
+
+            debugWeatherPreviewController = null;
+            RefreshWeatherBlendingSystem();
+            return true;
+        }
+#endif
+
         #region 辅助类
         [Serializable]
         public class WeatherControllerTimeRange : WeatherScheduleEntry
@@ -233,6 +287,8 @@ namespace DawnTOD
         {
 #if USING_HDRP
             CacheVolumeComponents();
+#elif USING_URP
+            EnsureRuntimeFogVolume();
 #endif
 
             // 调度列表是唯一序列化来源；场景扫描只由显式 Rescan 触发。
@@ -242,6 +298,16 @@ namespace DawnTOD
 
         private void Update()
         {
+#if USING_URP
+            if (runtimeFogVolume == null)
+            {
+                EnsureRuntimeFogVolume();
+                if (hasMixedResult)
+                {
+                    UpdateRuntimeFogVolume(mixedResult);
+                }
+            }
+#endif
             if (Application.isPlaying && autoAdvanceTime)
             {
                 AdvanceTime(Time.deltaTime);
@@ -272,11 +338,20 @@ namespace DawnTOD
 
         private void OnDisable()
         {
+#if UNITY_EDITOR
+            debugWeatherPreviewController = null;
+#endif
+#if USING_URP
+            ReleaseRuntimeFogVolume();
+#endif
             ReleaseCelestialShadowState();
         }
 
         private void OnDestroy()
         {
+#if USING_URP
+            ReleaseRuntimeFogVolume();
+#endif
             ReleaseCelestialShadowState();
             UnsubscribeTimeManager();
             if (_instance == this)
@@ -375,6 +450,21 @@ namespace DawnTOD
             }
 
             output.Clear();
+#if UNITY_EDITOR
+            if (TryGetDebugWeatherPreview(
+                    out DawnWeatherController previewController,
+                    out DawnWeatherPreset previewPreset))
+            {
+                output.Add(new WeatherContributionInfo(
+                    FindScheduleIndex(previewController),
+                    previewController,
+                    previewPreset,
+                    1f,
+                    1f,
+                    false));
+                return;
+            }
+#endif
             for (int index = 0; index < weightContributionBuffer.Count; index++)
             {
                 WeatherWeightContribution contribution =
@@ -552,6 +642,12 @@ namespace DawnTOD
 
         private bool TryEvaluateWeather(out WeatherBlendResult result)
         {
+#if UNITY_EDITOR
+            if (TryEvaluateDebugWeatherPreview(out result))
+            {
+                return true;
+            }
+#endif
             PrepareEvaluationBuffers();
             WeatherWeightResolutionMode resolutionMode =
                 WeatherContributionResolver.Resolve(
@@ -597,6 +693,63 @@ namespace DawnTOD
 
             return TryBlendFallback(out result);
         }
+
+#if UNITY_EDITOR
+        private bool TryEvaluateDebugWeatherPreview(
+            out WeatherBlendResult result)
+        {
+            if (!TryGetDebugWeatherPreview(
+                    out DawnWeatherController controller,
+                    out DawnWeatherPreset preset) ||
+                !WeatherPresetSampler.TrySample(
+                    preset,
+                    GetNormalizedTime(),
+                    out WeatherSample sample))
+            {
+                debugWeatherPreviewController = null;
+                result = default;
+                return false;
+            }
+
+            int sourceIndex = FindScheduleIndex(controller);
+            weightContributionBuffer.Clear();
+            weightContributionBuffer.Add(new WeatherWeightContribution(
+                sourceIndex,
+                1f,
+                1f));
+            sampleContributionBuffer.Clear();
+            sampleContributionBuffer.Add(new WeatherSampleContribution(
+                sourceIndex,
+                sample,
+                1f));
+            return WeatherBlender.TryBlend(sampleContributionBuffer, out result);
+        }
+
+        private bool TryGetDebugWeatherPreview(
+            out DawnWeatherController controller,
+            out DawnWeatherPreset preset)
+        {
+            controller = debugWeatherPreviewController;
+            preset = controller != null ? controller.ActivePreset : null;
+            return controller != null &&
+                   controller.isActiveAndEnabled &&
+                   preset != null;
+        }
+
+        private int FindScheduleIndex(DawnWeatherController controller)
+        {
+            int rangeCount = controllerTimeRanges?.Count ?? 0;
+            for (int index = 0; index < rangeCount; index++)
+            {
+                if (controllerTimeRanges[index]?.controller == controller)
+                {
+                    return index;
+                }
+            }
+
+            return DebugWeatherPreviewSourceIndex;
+        }
+#endif
 
         private void PrepareEvaluationBuffers()
         {
@@ -717,6 +870,7 @@ namespace DawnTOD
             {
                 skySetting.SetSpaceEmissionMultiplier(mixedResult.StarEmission);
             }
+            UpdateRuntimeFogVolume(mixedResult);
 #endif
 #if USING_HDRP
             // ========== 应用天空属性 ==========
@@ -950,6 +1104,97 @@ namespace DawnTOD
             hdrpVolume.profile.TryGet(out fog);
             hdrpVolume.profile.TryGet(out exposure);
             hdrpVolume.profile.TryGet(out indirectLighting);
+        }
+#endif
+
+#if USING_URP
+        private void EnsureRuntimeFogVolume()
+        {
+            if (runtimeFogVolume != null && runtimeFogSettings != null)
+            {
+                return;
+            }
+
+            ReleaseRuntimeFogVolume();
+
+            runtimeFogVolumeObject = new GameObject("Dawn TOD Runtime Fog Volume")
+            {
+                hideFlags = HideFlags.HideAndDontSave,
+                layer = gameObject.layer
+            };
+            runtimeFogVolumeObject.transform.SetParent(transform, false);
+
+            runtimeFogProfile = ScriptableObject.CreateInstance<VolumeProfile>();
+            runtimeFogProfile.name = "Dawn TOD Runtime Fog Profile";
+            runtimeFogProfile.hideFlags = HideFlags.HideAndDontSave;
+            runtimeFogSettings = runtimeFogProfile.Add<DawnFogVolume>(true);
+
+            runtimeFogVolume = runtimeFogVolumeObject.AddComponent<Volume>();
+            runtimeFogVolume.isGlobal = true;
+            runtimeFogVolume.priority = RuntimeFogVolumePriority;
+            runtimeFogVolume.weight = 1f;
+            runtimeFogVolume.sharedProfile = runtimeFogProfile;
+        }
+
+        private void UpdateRuntimeFogVolume(WeatherBlendResult result)
+        {
+            if (runtimeFogSettings == null)
+            {
+                return;
+            }
+
+            float baseHeight = result.FogHeight;
+            SetOverride(runtimeFogSettings.enabled, true);
+            SetOverride(
+                runtimeFogSettings.meanFreePath,
+                Mathf.Max(0.01f, result.FogDistance));
+            SetOverride(runtimeFogSettings.baseHeight, baseHeight);
+            SetOverride(runtimeFogSettings.albedo, result.FogColor);
+            SetOverride(
+                runtimeFogSettings.maximumHeight,
+                baseHeight + DefaultFogHeightRange);
+            SetOverride(
+                runtimeFogSettings.maximumFogDistance,
+                DefaultMaximumFogDistance);
+            SetOverride(runtimeFogSettings.affectSky, true);
+        }
+
+        private static void SetOverride<T>(VolumeParameter<T> parameter, T value)
+        {
+            parameter.overrideState = true;
+            parameter.value = value;
+        }
+
+        private void ReleaseRuntimeFogVolume()
+        {
+            if (runtimeFogVolume != null)
+            {
+                runtimeFogVolume.enabled = false;
+            }
+
+            DestroyRuntimeFogObject(runtimeFogVolumeObject);
+            DestroyRuntimeFogObject(runtimeFogProfile);
+            runtimeFogVolumeObject = null;
+            runtimeFogVolume = null;
+            runtimeFogProfile = null;
+            runtimeFogSettings = null;
+        }
+
+        private static void DestroyRuntimeFogObject(UnityEngine.Object target)
+        {
+            if (target == null)
+            {
+                return;
+            }
+
+#if UNITY_EDITOR
+            if (!Application.isPlaying)
+            {
+                DestroyImmediate(target);
+                return;
+            }
+#endif
+            Destroy(target);
         }
 #endif
 

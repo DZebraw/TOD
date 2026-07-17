@@ -44,6 +44,8 @@ namespace DawnTODEditor
         private bool showFogSettings = true;
         private bool showExposureSettings = true;
         private bool showRainySettings = true;
+        private DawnTODSystem debugPreviewSystem;
+        private DawnWeatherController debugPreviewController;
 
         private void OnEnable()
         {
@@ -51,6 +53,11 @@ namespace DawnTODEditor
             timeOfDayProp = serializedObject.FindProperty("timeOfDay");
 
             UpdatePresetSerializedProperties();
+        }
+
+        private void OnDisable()
+        {
+            RestoreDebugWeatherPreview();
         }
 
         private void UpdatePresetSerializedProperties()
@@ -104,6 +111,9 @@ namespace DawnTODEditor
                     controller);
                 UpdatePresetSerializedProperties();
             }
+            EditorGUILayout.Space(5);
+
+            DrawDebugWeatherPreview(controller);
             EditorGUILayout.Space(5);
 
             // ========== 时间控制 ==========
@@ -197,6 +207,84 @@ namespace DawnTODEditor
             ApplyControllerModifiedPropertiesAndRefresh(
                 serializedObject,
                 controller);
+        }
+
+        private void DrawDebugWeatherPreview(
+            DawnWeatherController controller)
+        {
+            DawnTODSystem todSystem = DawnTODSystem.Instance;
+            bool isPreviewingThisController =
+                todSystem != null &&
+                todSystem.IsDebugWeatherPreview(controller);
+
+            if (isPreviewingThisController)
+            {
+                debugPreviewSystem = todSystem;
+                debugPreviewController = controller;
+                EditorGUILayout.HelpBox(
+                    "Solo weather preview is active. The normal multi-weather blend " +
+                    "will be restored when this Inspector closes.",
+                    MessageType.Warning);
+                if (GUILayout.Button("Restore Multi-Weather Blending"))
+                {
+                    todSystem.ClearDebugWeatherPreview(controller);
+                    debugPreviewSystem = null;
+                    debugPreviewController = null;
+                    SceneView.RepaintAll();
+                }
+
+                return;
+            }
+
+            bool hasSystem = todSystem != null;
+            bool hasPreset = controller != null && controller.ActivePreset != null;
+            bool isControllerActive =
+                controller != null && controller.isActiveAndEnabled;
+            using (new EditorGUI.DisabledScope(
+                       !hasSystem || !hasPreset || !isControllerActive))
+            {
+                if (GUILayout.Button("Solo Preview This Weather"))
+                {
+                    if (todSystem.SetDebugWeatherPreview(controller))
+                    {
+                        debugPreviewSystem = todSystem;
+                        debugPreviewController = controller;
+                        SceneView.RepaintAll();
+                    }
+                }
+            }
+
+            if (!hasSystem)
+            {
+                EditorGUILayout.HelpBox(
+                    "A Dawn TOD System is required for solo weather preview.",
+                    MessageType.Info);
+            }
+            else if (!hasPreset)
+            {
+                EditorGUILayout.HelpBox(
+                    "Assign an Active Preset to enable solo weather preview.",
+                    MessageType.Info);
+            }
+            else if (!isControllerActive)
+            {
+                EditorGUILayout.HelpBox(
+                    "Enable this Weather Controller to use solo weather preview.",
+                    MessageType.Info);
+            }
+        }
+
+        private void RestoreDebugWeatherPreview()
+        {
+            if (debugPreviewSystem != null &&
+                debugPreviewController != null)
+            {
+                debugPreviewSystem.ClearDebugWeatherPreview(
+                    debugPreviewController);
+            }
+
+            debugPreviewSystem = null;
+            debugPreviewController = null;
         }
 
         internal static bool ApplyControllerModifiedPropertiesAndRefresh(
