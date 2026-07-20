@@ -61,6 +61,10 @@ Shader "Hidden/DawnTOD/PostProcessFog"
                     return source;
                 }
 
+                // The pass is full-screen, but fog density is evaluated in world
+                // space: reconstruct the pixel position from depth and integrate
+                // along the world-space camera ray. Moving the camera therefore
+                // changes optical depth naturally, not because the fog is local-space.
                 float3 cameraPosition = _WorldSpaceCameraPos;
                 float3 worldPosition = ComputeWorldSpacePosition(
                     uv,

@@ -344,6 +344,26 @@ namespace DawnTOD
             {
                 meshRenderer = GetComponent<MeshRenderer>();
             }
+
+            DisableRendererShadows();
+        }
+
+        private void DisableRendererShadows()
+        {
+            if (meshRenderer == null)
+            {
+                return;
+            }
+
+            if (meshRenderer.shadowCastingMode != ShadowCastingMode.Off)
+            {
+                meshRenderer.shadowCastingMode = ShadowCastingMode.Off;
+            }
+
+            if (meshRenderer.receiveShadows)
+            {
+                meshRenderer.receiveShadows = false;
+            }
         }
 
         private void CacheMainCamera()

@@ -58,7 +58,6 @@ namespace DawnTOD
 
         private const double FallbackWarningIntervalSeconds = 5d;
         private const double RainOutputWarningIntervalSeconds = 5d;
-        private const float CelestialLightSwitchRelativeMargin = 0.05f;
 
         // ========== 时间控制 ==========
         [SerializeField] private float sunriseTime = 6f;
@@ -116,20 +115,14 @@ namespace DawnTOD
         [NonSerialized] private VolumeProfile runtimeFogProfile;
         [NonSerialized] private DawnFogVolume runtimeFogSettings;
 
-        private const float RuntimeFogVolumePriority = -10000f;
+        // TOD owns the DawnFogVolume values at runtime. Keep this above authored
+        // scene volumes so the preset tracks are the active source of fog data.
+        private const float RuntimeFogVolumePriority = 10000f;
         private const float DefaultFogHeightRange = 100f;
         private const float DefaultMaximumFogDistance = 5000f;
 #endif
 
         private bool isNight = false;
-        private Light shadowOwner;
-        [NonSerialized] private Light cachedShadowSunLight;
-        [NonSerialized] private Light cachedShadowMoonLight;
-        [NonSerialized] private LightShadows cachedSunShadowMode;
-        [NonSerialized] private LightShadows cachedMoonShadowMode;
-        [NonSerialized] private Light previousRenderSettingsSun;
-        [NonSerialized] private bool celestialShadowStateInitialized;
-        [NonSerialized] private bool renderSettingsSunCaptured;
         [NonSerialized] private DawnGPUParticleSystem resolvedLegacyRainParticleSystem;
         [NonSerialized] private bool rainOutputResolutionAttempted;
 
@@ -344,7 +337,6 @@ namespace DawnTOD
 #if USING_URP
             ReleaseRuntimeFogVolume();
 #endif
-            ReleaseCelestialShadowState();
         }
 
         private void OnDestroy()
@@ -352,7 +344,6 @@ namespace DawnTOD
 #if USING_URP
             ReleaseRuntimeFogVolume();
 #endif
-            ReleaseCelestialShadowState();
             UnsubscribeTimeManager();
             if (_instance == this)
             {
@@ -848,7 +839,6 @@ namespace DawnTOD
             // ========== 应用太阳属性 ==========
             if (sunLight != null)
             {
-                sunLight.gameObject.SetActive(true);
                 sunLight.transform.rotation = CreateLookRotation(mixedResult.SunDirection);
                 sunLight.intensity = mixedResult.SunIntensity;
                 sunLight.color = mixedResult.SunColor;
@@ -857,13 +847,10 @@ namespace DawnTOD
             // ========== 应用月亮属性 ==========
             if (moonLight != null)
             {
-                moonLight.gameObject.SetActive(true);
                 moonLight.transform.rotation = CreateLookRotation(mixedResult.MoonDirection);
                 moonLight.intensity = mixedResult.MoonIntensity;
                 moonLight.color = mixedResult.MoonColor;
             }
-
-            UpdateCelestialShadows();
 #if USING_URP
             RuntimeSkySetting skySetting = ResolveRuntimeSkySetting();
             if (skySetting != null)
@@ -934,6 +921,8 @@ namespace DawnTOD
         /// </summary>
         private void UpdateWeatherBlendingSystem()
         {
+            CheckDayNightTransition();
+
             if (TryEvaluateWeather(out WeatherBlendResult evaluatedResult))
             {
                 mixedResult = evaluatedResult;
@@ -941,7 +930,6 @@ namespace DawnTOD
             }
 
             ApplyMixedWeatherResult();
-            CheckDayNightTransition();
         }
 
         private static Quaternion CreateLookRotation(Vector3 direction)
@@ -1200,159 +1188,16 @@ namespace DawnTOD
 
         private void CheckDayNightTransition()
         {
-            // Sunrise/sunset remain event and display boundaries only. Preset curves own
-            // celestial intensity, so twilight never toggles either light GameObject.
             isNight = timeOfDay < sunriseTime || timeOfDay >= sunsetTime;
-        }
-
-        private void UpdateCelestialShadows()
-        {
-            EnsureCelestialShadowState();
-
-            if (shadowOwner != sunLight && shadowOwner != moonLight)
+            if (sunLight != null && sunLight.gameObject.activeSelf != !isNight)
             {
-                shadowOwner = null;
+                sunLight.gameObject.SetActive(!isNight);
             }
 
-            float sunIntensity = GetEffectiveIntensity(sunLight);
-            float moonIntensity = GetEffectiveIntensity(moonLight);
-            Light candidate = sunIntensity >= moonIntensity ? sunLight : moonLight;
-
-            if (shadowOwner != null)
+            if (moonLight != null && moonLight.gameObject.activeSelf != isNight)
             {
-                float ownerIntensity = GetEffectiveIntensity(shadowOwner);
-                bool ownerIsSun = shadowOwner == sunLight;
-                float competitorIntensity = ownerIsSun ? moonIntensity : sunIntensity;
-                Light competitor = ownerIsSun ? moonLight : sunLight;
-
-                if (competitor != null &&
-                    competitorIntensity >
-                    ownerIntensity * (1f + CelestialLightSwitchRelativeMargin))
-                {
-                    shadowOwner = competitor;
-                }
+                moonLight.gameObject.SetActive(isNight);
             }
-
-            if (shadowOwner == null && candidate != null)
-            {
-                shadowOwner = candidate;
-            }
-
-            ApplyShadowMode(
-                sunLight,
-                shadowOwner == sunLight ? cachedSunShadowMode : LightShadows.None);
-            ApplyShadowMode(
-                moonLight,
-                shadowOwner == moonLight ? cachedMoonShadowMode : LightShadows.None);
-            SynchronizeMainDirectionalLight();
-        }
-
-        private void EnsureCelestialShadowState()
-        {
-            if (celestialShadowStateInitialized &&
-                cachedShadowSunLight == sunLight &&
-                cachedShadowMoonLight == moonLight)
-            {
-                return;
-            }
-
-            RestoreCachedShadowModes();
-            cachedShadowSunLight = sunLight;
-            cachedShadowMoonLight = moonLight;
-            cachedSunShadowMode = GetConfiguredShadowMode(sunLight);
-            cachedMoonShadowMode = GetConfiguredShadowMode(moonLight);
-
-            // Older TOD versions serialized whichever inactive light as None. If one
-            // celestial light still has a configured mode, use it to recover the other.
-            if (cachedSunShadowMode == LightShadows.None &&
-                cachedMoonShadowMode != LightShadows.None)
-            {
-                cachedSunShadowMode = cachedMoonShadowMode;
-            }
-            else if (cachedMoonShadowMode == LightShadows.None &&
-                     cachedSunShadowMode != LightShadows.None)
-            {
-                cachedMoonShadowMode = cachedSunShadowMode;
-            }
-
-            if (!renderSettingsSunCaptured)
-            {
-                previousRenderSettingsSun = RenderSettings.sun;
-                renderSettingsSunCaptured = true;
-            }
-
-            celestialShadowStateInitialized = true;
-        }
-
-        private void SynchronizeMainDirectionalLight()
-        {
-            if (shadowOwner != null)
-            {
-                RenderSettings.sun = shadowOwner;
-            }
-            else if (renderSettingsSunCaptured)
-            {
-                RenderSettings.sun = previousRenderSettingsSun;
-            }
-        }
-
-        private void ReleaseCelestialShadowState()
-        {
-            Light managedSun = cachedShadowSunLight;
-            Light managedMoon = cachedShadowMoonLight;
-            Light managedOwner = shadowOwner;
-
-            RestoreCachedShadowModes();
-            if (renderSettingsSunCaptured &&
-                (RenderSettings.sun == managedOwner ||
-                 RenderSettings.sun == managedSun ||
-                 RenderSettings.sun == managedMoon))
-            {
-                RenderSettings.sun = previousRenderSettingsSun;
-            }
-
-            shadowOwner = null;
-            previousRenderSettingsSun = null;
-            renderSettingsSunCaptured = false;
-            celestialShadowStateInitialized = false;
-        }
-
-        private void RestoreCachedShadowModes()
-        {
-            ApplyShadowMode(cachedShadowSunLight, cachedSunShadowMode);
-            ApplyShadowMode(cachedShadowMoonLight, cachedMoonShadowMode);
-            cachedShadowSunLight = null;
-            cachedShadowMoonLight = null;
-            cachedSunShadowMode = LightShadows.None;
-            cachedMoonShadowMode = LightShadows.None;
-        }
-
-        private static float GetEffectiveIntensity(Light light)
-        {
-            if (light == null || !light.enabled || !light.gameObject.activeInHierarchy)
-            {
-                return 0f;
-            }
-
-            return Mathf.Max(0f, light.intensity);
-        }
-
-        private static LightShadows GetConfiguredShadowMode(Light light)
-        {
-            return light != null ? light.shadows : LightShadows.None;
-        }
-
-        private static void ApplyShadowMode(Light light, LightShadows shadowMode)
-        {
-            if (light != null)
-            {
-                light.shadows = shadowMode;
-            }
-        }
-
-        internal Light GetShadowOwnerForTests()
-        {
-            return shadowOwner;
         }
         #endregion
 
@@ -1398,24 +1243,9 @@ namespace DawnTOD
         /// <returns>白天返回太阳光，夜间返回月光，如果都不存在则返回null</returns>
         public Light GetMainDirectionalLight()
         {
-            if (shadowOwner == sunLight || shadowOwner == moonLight)
-            {
-                return shadowOwner;
-            }
-
-            if (sunLight == null)
-            {
-                return moonLight;
-            }
-
-            if (moonLight == null)
-            {
-                return sunLight;
-            }
-
-            return GetEffectiveIntensity(sunLight) >= GetEffectiveIntensity(moonLight)
-                ? sunLight
-                : moonLight;
+            return isNight
+                ? (moonLight != null ? moonLight : sunLight)
+                : (sunLight != null ? sunLight : moonLight);
         }
 
 
