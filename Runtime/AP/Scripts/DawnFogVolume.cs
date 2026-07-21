@@ -4,11 +4,7 @@ using UnityEngine.Rendering;
 
 namespace DawnTOD
 {
-#if USING_URP
-    [VolumeComponentMenu("Dawn TOD/Fog")]
-#else
     [HideInInspector]
-#endif
     [Serializable]
     public sealed class DawnFogVolume : VolumeComponent
     {

@@ -1132,7 +1132,11 @@ namespace DawnTOD
             }
 
             float baseHeight = result.FogHeight;
-            SetOverride(runtimeFogSettings.enabled, true);
+            ResolveRuntimeFogToggles(
+                result.DominantSourceIndex,
+                out bool fogEnabled,
+                out bool fogAffectSky);
+            SetOverride(runtimeFogSettings.enabled, fogEnabled);
             SetOverride(
                 runtimeFogSettings.meanFreePath,
                 Mathf.Max(0.01f, result.FogDistance));
@@ -1144,7 +1148,42 @@ namespace DawnTOD
             SetOverride(
                 runtimeFogSettings.maximumFogDistance,
                 DefaultMaximumFogDistance);
-            SetOverride(runtimeFogSettings.affectSky, true);
+            SetOverride(runtimeFogSettings.affectSky, fogAffectSky);
+        }
+
+        private void ResolveRuntimeFogToggles(
+            int sourceIndex,
+            out bool fogEnabled,
+            out bool fogAffectSky)
+        {
+            // Keep the legacy fallback behavior when no controller is providing
+            // the blended result.
+            fogEnabled = true;
+            fogAffectSky = true;
+
+#if UNITY_EDITOR
+            if (sourceIndex == DebugWeatherPreviewSourceIndex &&
+                debugWeatherPreviewController != null)
+            {
+                fogEnabled = debugWeatherPreviewController.FogEnabled;
+                fogAffectSky = debugWeatherPreviewController.FogAffectSky;
+                return;
+            }
+#endif
+
+            if (sourceIndex < 0 ||
+                sourceIndex >= (controllerTimeRanges?.Count ?? 0))
+            {
+                return;
+            }
+
+            WeatherControllerTimeRange range = controllerTimeRanges[sourceIndex];
+            DawnWeatherController controller = range?.controller;
+            if (controller != null)
+            {
+                fogEnabled = controller.FogEnabled;
+                fogAffectSky = controller.FogAffectSky;
+            }
         }
 
         private static void SetOverride<T>(VolumeParameter<T> parameter, T value)

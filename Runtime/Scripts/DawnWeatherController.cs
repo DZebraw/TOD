@@ -26,6 +26,16 @@ namespace DawnTOD
         [SerializeField]
         private float timeScale = 1f;
 
+#if USING_URP
+        [Tooltip("Enables the fog output for this weather controller.")]
+        [SerializeField]
+        private bool fogEnabled = true;
+
+        [Tooltip("Applies fog to pixels that contain only the sky background.")]
+        [SerializeField]
+        private bool fogAffectSky = true;
+#endif
+
         public DawnWeatherPreset ActivePreset
         {
             get => activePreset;
@@ -41,6 +51,11 @@ namespace DawnTOD
         public float SunRaiseTime => sunriseTime;
         public float SunSetTime => sunsetTime;
         public float NormalizedTime => GetNormalizedTime();
+
+#if USING_URP
+        public bool FogEnabled => fogEnabled;
+        public bool FogAffectSky => fogAffectSky;
+#endif
 
         public bool IsNight
         {

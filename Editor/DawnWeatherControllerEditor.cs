@@ -15,6 +15,10 @@ namespace DawnTODEditor
 
         private SerializedProperty activePresetProp;
         private SerializedProperty timeOfDayProp;
+#if USING_URP
+        private SerializedProperty fogEnabledProp;
+        private SerializedProperty fogAffectSkyProp;
+#endif
 
         private SerializedObject presetSerializedObject;
         private SerializedProperty sunAzimuthCurveProp;
@@ -54,6 +58,10 @@ namespace DawnTODEditor
         {
             activePresetProp = serializedObject.FindProperty("activePreset");
             timeOfDayProp = serializedObject.FindProperty("timeOfDay");
+#if USING_URP
+            fogEnabledProp = serializedObject.FindProperty("fogEnabled");
+            fogAffectSkyProp = serializedObject.FindProperty("fogAffectSky");
+#endif
 
             UpdatePresetSerializedProperties();
         }
@@ -169,6 +177,10 @@ namespace DawnTODEditor
                 if (showFogSettings)
                 {
                     EditorGUI.indentLevel++;
+#if USING_URP
+                    EditorGUILayout.PropertyField(fogEnabledProp, new GUIContent("Enable"));
+                    EditorGUILayout.PropertyField(fogAffectSkyProp, new GUIContent("Affect Sky"));
+#endif
                     DrawCurveField("Base Height (m)", fogHeightCurveProp, controller.NormalizedTime);
                     DrawCurveField("Mean Free Path (m)", fogDistanceCurveProp, controller.NormalizedTime);
                     DrawGradientField("Albedo", fogColorGradientProp, controller.NormalizedTime);
@@ -176,7 +188,7 @@ namespace DawnTODEditor
                     if (DawnFogRendererFeatureEditorUtility.IsInstalled(out var rendererData))
                     {
                         EditorGUILayout.HelpBox(
-                            $"URP output is active on '{rendererData.name}'. Maximum Height, Maximum Fog Distance and Affect Sky remain Volume Profile overrides.",
+                            $"URP output is active on '{rendererData.name}'.",
                             MessageType.Info);
                     }
                     else
