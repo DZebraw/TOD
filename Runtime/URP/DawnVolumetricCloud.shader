@@ -33,6 +33,11 @@ Shader "Hidden/DawnTOD/VolumetricCloud"
         TEXTURE2D_X(_DawnCloudTexture);
         SAMPLER(sampler_DawnCloudTexture);
 
+        float4 _DawnCloudShadowRayOrigin;
+        float4 _DawnCloudShadowRight;
+        float4 _DawnCloudShadowUp;
+        float4 _DawnCloudShadowLightDirection;
+
         float4 _DawnCloudBoundsMin;
         float4 _DawnCloudBoundsMax;
         float4 _DawnCloudShapeNoiseWeights;
@@ -301,16 +306,49 @@ Shader "Hidden/DawnTOD/VolumetricCloud"
                 _DawnCloudBoundsMax.xyz,
                 position,
                 lightDirection).y;
-            const int lightStepCount = 8;
+            float cloudLayerHeight = max(
+                _DawnCloudBoundsMax.y - _DawnCloudBoundsMin.y,
+                0.0001);
+            float horizontalDirectionLength = length(lightDirection.xz);
+            float maximumNoiseTiling = max(
+                _DawnCloudShapeTiling,
+                _DawnCloudDetailTiling);
+            // Keep shadow samples dense enough to resolve both horizontal 3D
+            // noise and the vertical density profile as the sun angle changes.
+            float horizontalStepLength = 0.5 / max(
+                maximumNoiseTiling * horizontalDirectionLength,
+                0.0001);
+            float verticalStepLength = cloudLayerHeight * 0.25 / max(
+                abs(lightDirection.y),
+                0.0001);
+            float targetStepLength = max(
+                min(horizontalStepLength, verticalStepLength),
+                0.0001);
+            const int minimumLightStepCount = 4;
+            const int maximumLightStepCount = 16;
+            int lightStepCount = clamp(
+                (int)ceil(distanceInsideBox / targetStepLength),
+                minimumLightStepCount,
+                maximumLightStepCount);
             float lightStepSize = distanceInsideBox / lightStepCount;
             float opticalDepth = 0.0;
+            // Midpoints retain nearby volume detail and avoid spending the last
+            // sample on the zero-density cloud-box boundary.
+            position += lightDirection * (lightStepSize * 0.5);
 
-            [unroll]
-            for (int stepIndex = 0; stepIndex < lightStepCount; stepIndex++)
+            [loop]
+            for (int stepIndex = 0;
+                 stepIndex < maximumLightStepCount;
+                 stepIndex++)
             {
-                position += lightDirection * lightStepSize;
+                if (stepIndex >= lightStepCount)
+                {
+                    break;
+                }
+
                 float density = max(0.0, DawnCloudSampleDensity(position));
                 opticalDepth += density * lightStepSize;
+                position += lightDirection * lightStepSize;
             }
 
             float directTransmittance = exp(
@@ -467,6 +505,48 @@ Shader "Hidden/DawnTOD/VolumetricCloud"
                 input.texcoord,
                 0);
         }
+
+        float FragCloudShadow(Varyings input) : SV_Target
+        {
+            UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(input);
+
+            float2 uv = input.texcoord;
+            float3 lightDirection = normalize(
+                _DawnCloudShadowLightDirection.xyz);
+            float3 rayOrigin =
+                _DawnCloudShadowRayOrigin.xyz +
+                _DawnCloudShadowRight.xyz * uv.x +
+                _DawnCloudShadowUp.xyz * uv.y;
+            float2 boxDistance = DawnCloudRayBoxDistance(
+                _DawnCloudBoundsMin.xyz,
+                _DawnCloudBoundsMax.xyz,
+                rayOrigin,
+                lightDirection);
+            float distanceInsideBox = boxDistance.y;
+            if (distanceInsideBox <= 0.0001)
+            {
+                return 1.0;
+            }
+
+            const int shadowStepCount = 32;
+            float stepLength = distanceInsideBox / shadowStepCount;
+            float3 samplePosition = rayOrigin + lightDirection *
+                (boxDistance.x + stepLength * 0.5);
+            float opticalDepth = 0.0;
+
+            [loop]
+            for (int stepIndex = 0;
+                 stepIndex < shadowStepCount;
+                 stepIndex++)
+            {
+                opticalDepth +=
+                    DawnCloudSampleDensity(samplePosition) * stepLength;
+                samplePosition += lightDirection * stepLength;
+            }
+
+            return saturate(exp(
+                -opticalDepth * _DawnCloudLightAbsorptionTowardSun));
+        }
         ENDHLSL
 
         Pass
@@ -507,6 +587,20 @@ Shader "Hidden/DawnTOD/VolumetricCloud"
             HLSLPROGRAM
             #pragma vertex Vert
             #pragma fragment FragComposite
+            ENDHLSL
+        }
+
+        Pass
+        {
+            Name "Dawn TOD World Cloud Shadow"
+            ZTest Always
+            ZWrite Off
+            Cull Off
+            ColorMask R
+
+            HLSLPROGRAM
+            #pragma vertex Vert
+            #pragma fragment FragCloudShadow
             ENDHLSL
         }
     }

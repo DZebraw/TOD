@@ -26,10 +26,10 @@ namespace DawnTOD
                 : null;
             cloudPass = new DawnVolumetricCloudRenderPass(name)
             {
-                // Clouds must composite before DawnFogRendererFeature so the fog can
-                // affect the already-composited cloud result.
+                // Clouds composite first so directional volumetric light and fog
+                // can affect the already-composited cloud result in that order.
                 renderPassEvent = (RenderPassEvent)(
-                    (int)RenderPassEvent.BeforeRenderingPostProcessing - 1)
+                    (int)RenderPassEvent.BeforeRenderingPostProcessing - 2)
             };
         }
 
@@ -60,7 +60,19 @@ namespace DawnTOD
                 return;
             }
 
-            cloudPass.Setup(cloudMaterial, settings);
+            Vector3 directionToLight = Vector3.up;
+            int mainLightIndex = renderingData.lightData.mainLightIndex;
+            if (mainLightIndex >= 0 &&
+                mainLightIndex < renderingData.lightData.visibleLights.Length &&
+                renderingData.lightData.visibleLights[mainLightIndex].lightType ==
+                LightType.Directional)
+            {
+                directionToLight =
+                    -renderingData.lightData.visibleLights[mainLightIndex]
+                        .localToWorldMatrix.GetColumn(2);
+            }
+
+            cloudPass.Setup(cloudMaterial, settings, directionToLight.normalized);
             renderer.EnqueuePass(cloudPass);
         }
 
@@ -293,6 +305,8 @@ namespace DawnTOD
 
         private sealed class DawnVolumetricCloudRenderPass : ScriptableRenderPass
         {
+            private const int CloudShadowResolution = 256;
+
             private static readonly int ShapeNoiseId =
                 Shader.PropertyToID("_DawnCloudShapeNoise");
             private static readonly int DetailNoiseId =
@@ -307,6 +321,18 @@ namespace DawnTOD
                 Shader.PropertyToID("_DawnCloudLowDepthTexture");
             private static readonly int CloudTextureId =
                 Shader.PropertyToID("_DawnCloudTexture");
+            private static readonly int CloudShadowTextureId =
+                Shader.PropertyToID("_DawnCloudShadowTexture");
+            private static readonly int CloudWorldToShadowId =
+                Shader.PropertyToID("_DawnCloudWorldToShadow");
+            private static readonly int CloudShadowRayOriginId =
+                Shader.PropertyToID("_DawnCloudShadowRayOrigin");
+            private static readonly int CloudShadowRightId =
+                Shader.PropertyToID("_DawnCloudShadowRight");
+            private static readonly int CloudShadowUpId =
+                Shader.PropertyToID("_DawnCloudShadowUp");
+            private static readonly int CloudShadowLightDirectionId =
+                Shader.PropertyToID("_DawnCloudShadowLightDirection");
             private static readonly int BlitScaleBiasId =
                 Shader.PropertyToID("_BlitScaleBias");
             private static readonly int BoundsMinimumId =
@@ -378,7 +404,13 @@ namespace DawnTOD
             private CloudSettings settings;
             private RTHandle lowDepthTexture;
             private RTHandle cloudTexture;
+            private RTHandle cloudShadowTexture;
             private Vector4 blueNoiseScale;
+            private Vector3 lightDirection;
+            private Vector3 cloudShadowRayOrigin;
+            private Vector3 cloudShadowRight;
+            private Vector3 cloudShadowUp;
+            private Matrix4x4 cloudWorldToShadow;
 
             public DawnVolumetricCloudRenderPass(string passName)
             {
@@ -386,10 +418,16 @@ namespace DawnTOD
                 ConfigureInput(ScriptableRenderPassInput.Depth);
             }
 
-            public void Setup(Material passMaterial, CloudSettings cloudSettings)
+            public void Setup(
+                Material passMaterial,
+                CloudSettings cloudSettings,
+                Vector3 directionToLight)
             {
                 material = passMaterial;
                 settings = cloudSettings;
+                lightDirection = directionToLight.sqrMagnitude > 0.0001f
+                    ? directionToLight.normalized
+                    : Vector3.up;
             }
 
             public override void OnCameraSetup(
@@ -425,6 +463,28 @@ namespace DawnTOD
                     TextureWrapMode.Clamp,
                     name: "_DawnVolumetricCloudTexture");
 
+                var cloudShadowDescriptor = new RenderTextureDescriptor(
+                    CloudShadowResolution,
+                    CloudShadowResolution,
+                    GraphicsFormat.R16_SFloat,
+                    0)
+                {
+                    msaaSamples = 1,
+                    dimension = TextureDimension.Tex2D,
+                    volumeDepth = 1,
+                    useMipMap = false,
+                    autoGenerateMips = false,
+                    sRGB = false
+                };
+                RenderingUtils.ReAllocateIfNeeded(
+                    ref cloudShadowTexture,
+                    cloudShadowDescriptor,
+                    FilterMode.Bilinear,
+                    TextureWrapMode.Clamp,
+                    name: "_DawnVolumetricCloudShadow");
+
+                UpdateCloudShadowProjection();
+
                 blueNoiseScale = new Vector4(
                     renderingData.cameraData.cameraTargetDescriptor.width /
                     (float)Mathf.Max(1, settings.BlueNoise.width),
@@ -438,7 +498,8 @@ namespace DawnTOD
                 ScriptableRenderContext context,
                 ref RenderingData renderingData)
             {
-                if (material == null || lowDepthTexture == null || cloudTexture == null)
+                if (material == null || lowDepthTexture == null ||
+                    cloudTexture == null || cloudShadowTexture == null)
                 {
                     return;
                 }
@@ -446,6 +507,29 @@ namespace DawnTOD
                 CommandBuffer cmd = CommandBufferPool.Get();
                 using (new ProfilingScope(cmd, profilingSampler))
                 {
+                    PropertyBlock.Clear();
+                    SetCloudProperties(PropertyBlock);
+                    PropertyBlock.SetVector(
+                        CloudShadowRayOriginId,
+                        cloudShadowRayOrigin);
+                    PropertyBlock.SetVector(
+                        CloudShadowRightId,
+                        cloudShadowRight);
+                    PropertyBlock.SetVector(
+                        CloudShadowUpId,
+                        cloudShadowUp);
+                    PropertyBlock.SetVector(
+                        CloudShadowLightDirectionId,
+                        lightDirection);
+                    CoreUtils.SetRenderTarget(cmd, cloudShadowTexture);
+                    CoreUtils.DrawFullScreen(cmd, material, PropertyBlock, 3);
+                    cmd.SetGlobalTexture(
+                        CloudShadowTextureId,
+                        cloudShadowTexture.nameID);
+                    cmd.SetGlobalMatrix(
+                        CloudWorldToShadowId,
+                        cloudWorldToShadow);
+
                     PropertyBlock.Clear();
                     PropertyBlock.SetVector(BlitScaleBiasId, FullScreenScaleBias);
                     CoreUtils.SetRenderTarget(cmd, lowDepthTexture);
@@ -455,6 +539,11 @@ namespace DawnTOD
                     PropertyBlock.SetTexture(LowDepthTextureId, lowDepthTexture);
                     CoreUtils.SetRenderTarget(cmd, cloudTexture);
                     CoreUtils.DrawFullScreen(cmd, material, PropertyBlock, 1);
+
+                    // The directional-light pass runs immediately after clouds.
+                    // Publish alpha (camera-ray cloud transmittance) so cloud gaps
+                    // can shape screen-space crepuscular rays.
+                    cmd.SetGlobalTexture(CloudTextureId, cloudTexture.nameID);
 
                     PropertyBlock.Clear();
                     PropertyBlock.SetVector(BlitScaleBiasId, FullScreenScaleBias);
@@ -475,6 +564,108 @@ namespace DawnTOD
                 lowDepthTexture = null;
                 cloudTexture?.Release();
                 cloudTexture = null;
+                cloudShadowTexture?.Release();
+                cloudShadowTexture = null;
+            }
+
+            private void UpdateCloudShadowProjection()
+            {
+                Vector3 referenceAxis = Mathf.Abs(
+                    Vector3.Dot(lightDirection, Vector3.up)) > 0.99f
+                    ? Vector3.right
+                    : Vector3.up;
+                Vector3 right = Vector3.Cross(
+                    referenceAxis,
+                    lightDirection).normalized;
+                Vector3 up = Vector3.Cross(
+                    lightDirection,
+                    right).normalized;
+
+                float minimumRight = float.PositiveInfinity;
+                float maximumRight = float.NegativeInfinity;
+                float minimumUp = float.PositiveInfinity;
+                float maximumUp = float.NegativeInfinity;
+                float minimumLight = float.PositiveInfinity;
+                float maximumLight = float.NegativeInfinity;
+
+                for (int x = 0; x < 2; x++)
+                {
+                    for (int y = 0; y < 2; y++)
+                    {
+                        for (int z = 0; z < 2; z++)
+                        {
+                            Vector3 corner = new Vector3(
+                                x == 0
+                                    ? settings.BoundsMinimum.x
+                                    : settings.BoundsMaximum.x,
+                                y == 0
+                                    ? settings.BoundsMinimum.y
+                                    : settings.BoundsMaximum.y,
+                                z == 0
+                                    ? settings.BoundsMinimum.z
+                                    : settings.BoundsMaximum.z);
+                            float projectedRight = Vector3.Dot(corner, right);
+                            float projectedUp = Vector3.Dot(corner, up);
+                            float projectedLight = Vector3.Dot(
+                                corner,
+                                lightDirection);
+                            minimumRight = Mathf.Min(
+                                minimumRight,
+                                projectedRight);
+                            maximumRight = Mathf.Max(
+                                maximumRight,
+                                projectedRight);
+                            minimumUp = Mathf.Min(minimumUp, projectedUp);
+                            maximumUp = Mathf.Max(maximumUp, projectedUp);
+                            minimumLight = Mathf.Min(
+                                minimumLight,
+                                projectedLight);
+                            maximumLight = Mathf.Max(
+                                maximumLight,
+                                projectedLight);
+                        }
+                    }
+                }
+
+                float rightExtent = Mathf.Max(
+                    maximumRight - minimumRight,
+                    0.01f);
+                float upExtent = Mathf.Max(maximumUp - minimumUp, 0.01f);
+                float lightExtent = Mathf.Max(
+                    maximumLight - minimumLight,
+                    0.01f);
+                cloudShadowRayOrigin =
+                    right * minimumRight +
+                    up * minimumUp +
+                    lightDirection * (minimumLight - 1f);
+                cloudShadowRight = right * rightExtent;
+                cloudShadowUp = up * upExtent;
+
+                cloudWorldToShadow = Matrix4x4.identity;
+                cloudWorldToShadow.SetRow(
+                    0,
+                    new Vector4(
+                        right.x / rightExtent,
+                        right.y / rightExtent,
+                        right.z / rightExtent,
+                        -minimumRight / rightExtent));
+                cloudWorldToShadow.SetRow(
+                    1,
+                    new Vector4(
+                        up.x / upExtent,
+                        up.y / upExtent,
+                        up.z / upExtent,
+                        -minimumUp / upExtent));
+                cloudWorldToShadow.SetRow(
+                    2,
+                    new Vector4(
+                        lightDirection.x / lightExtent,
+                        lightDirection.y / lightExtent,
+                        lightDirection.z / lightExtent,
+                        -minimumLight / lightExtent));
+                cloudWorldToShadow.SetRow(
+                    3,
+                    new Vector4(0f, 0f, 0f, 1f));
             }
 
             private void SetCloudProperties(MaterialPropertyBlock properties)
