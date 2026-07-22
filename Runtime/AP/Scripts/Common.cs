@@ -8,7 +8,6 @@ namespace DawnTOD
     {
         public static readonly int kRWintergalCPDensityLUT = Shader.PropertyToID("_RWintegralCPDensityLUT");
         public static readonly int kIntergalCPDensityLUT = Shader.PropertyToID("_IntegralCPDensityLUT");
-        public static readonly int kRWhemiSphereRandomNormlizedVecLUT = Shader.PropertyToID("_RWhemiSphereRandomNormlizedVecLUT");
         public static readonly int kRWambientLUT = Shader.PropertyToID("_RWambientLUT");
         public static readonly int kRWinScatteringLUT = Shader.PropertyToID("_RWinScatteringLUT");
         public static readonly int kInScatteringLUT = Shader.PropertyToID("_InScatteringLUT");
@@ -43,7 +42,9 @@ namespace DawnTOD
         // Helper Function
         public static void CheckOrCreateLUT(ref RenderTexture targetLUT, Vector2Int size, RenderTextureFormat format)
         {
-            if (targetLUT == null || (targetLUT.width != size.x && targetLUT.height != size.y)  )
+            if (targetLUT == null ||
+                targetLUT.width != size.x ||
+                targetLUT.height != size.y)
             {
                 if(targetLUT != null) targetLUT.Release();
 

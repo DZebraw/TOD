@@ -13,6 +13,7 @@
 
 #define SAMPLECOUNT_DENSITY 256
 #define SAMPLECOUNT_INSCATTERING 512
+#define SAMPLECOUNT_AMBIENT 512
 
 // CP Particle Density
 RWTexture2D<float2> _RWintegralCPDensityLUT;
@@ -26,7 +27,7 @@ Texture2D<float3> _InScatteringLUT;
 
 // Ambient
 RWTexture2D<float3> _RWambientLUT;
-Texture2D<float3> _RWhemiSphereRandomNormlizedVecLUT;
+float3 _AtmosphereGroundColor;
 
 //TODO Sample State
 SamplerState _trilinearClampSampler;
@@ -119,27 +120,48 @@ void CSsunOnSurface(uint3 id: SV_DispatchThreadID)
 // =================================================================================
 // PrecomputeAmbient
 // =================================================================================
-float3 ComputeAmbient(float cosSunAngle01, int count)
+void ComputeAmbientTrilight(
+    float cosSunAngle01,
+    int count,
+    out float3 skyIrradiance,
+    out float3 equatorIrradiance,
+    out float3 groundIrradiance)
 {
-    float cosSunAngle = cosSunAngle01 * 2 - 1;
-    float sinSunAngle = 1 - sqrt(cosSunAngle * cosSunAngle);
-    float3 lightDir = float3(sinSunAngle, cosSunAngle, 0);
-    
-    float3 total = (float3)0;
-    for (int i = 0; i < count; ++ i)
-    {            
-        float3 viewDir = _RWhemiSphereRandomNormlizedVecLUT.SampleLevel(_pointClampSampler, float2((float)i / count, 0.5), 0.0, 0.0).xyz;
-        float cosViewAngle = dot(viewDir,float3(0,1,0));
-        
-        //float3 extinction;
-        // x : viewDir, y: sunDir 
-        float3 inScattering = _InScatteringLUT.SampleLevel(_trilinearClampSampler,float2(cosViewAngle * 0.5 + 0.5,cosSunAngle01),0); 
-        
-        total += cosViewAngle * inScattering;
+    float3 skyTotal = 0.0;
+    float3 equatorTotal = 0.0;
+
+    // A deterministic Fibonacci sequence avoids a CPU-generated random
+    // texture and distributes samples uniformly over the upper hemisphere.
+    for (int i = 0; i < count; ++i)
+    {
+        float y = ((float)i + 0.5) / count;
+        float phi = ((float)i + 0.5) * 2.39996323;
+        float radius = sqrt(saturate(1.0 - y * y));
+        float3 viewDir = float3(
+            cos(phi) * radius,
+            y,
+            sin(phi) * radius);
+
+        // The current atmosphere LUT is rotationally symmetric around the
+        // world up axis, so radiance depends on the view elevation only.
+        float3 inScattering = _InScatteringLUT.SampleLevel(
+            _trilinearClampSampler,
+            float2(viewDir.y * 0.5 + 0.5, cosSunAngle01),
+            0);
+
+        skyTotal += viewDir.y * inScattering;
+        equatorTotal += max(viewDir.x, 0.0) * inScattering;
     }
-    //TODO 2 * PI ?
-    total = 2 * PI *total/count;
-    return total;
+
+    float integrationScale = 2.0 * PI / count;
+    skyIrradiance = skyTotal * integrationScale;
+
+    // A horizontal normal sees half sky and half ground. The sky half is
+    // integrated above; the lower quarter sphere contributes PI/2 for a
+    // uniform ground radiance.
+    equatorIrradiance = equatorTotal * integrationScale +
+        _AtmosphereGroundColor * (0.5 * PI);
+    groundIrradiance = _AtmosphereGroundColor * PI;
 }
 
 // x : sunViewAngle01
@@ -148,13 +170,23 @@ void CSAmbient(uint3 id: SV_DispatchThreadID)
 {
     int w, h;
     _RWambientLUT.GetDimensions(w,h);
-    
-    float cosAngle01 = (float)id.x / w;
-    //float height01 = (float)id.y / h;
-    
-    _RWhemiSphereRandomNormlizedVecLUT.GetDimensions(w, h);
-    int count = w;
-    _RWambientLUT[int2(id.x,0)] = ComputeAmbient(cosAngle01, count);
+    if (id.x >= (uint)w || h < 3)
+        return;
+
+    float cosAngle01 = ((float)id.x + 0.5) / w;
+    float3 skyIrradiance;
+    float3 equatorIrradiance;
+    float3 groundIrradiance;
+    ComputeAmbientTrilight(
+        cosAngle01,
+        SAMPLECOUNT_AMBIENT,
+        skyIrradiance,
+        equatorIrradiance,
+        groundIrradiance);
+
+    _RWambientLUT[int2(id.x, 0)] = skyIrradiance;
+    _RWambientLUT[int2(id.x, 1)] = equatorIrradiance;
+    _RWambientLUT[int2(id.x, 2)] = groundIrradiance;
 }
 
 
@@ -174,11 +206,11 @@ void CSInScattering(uint3 id: SV_DispatchThreadID)
     
     float3 rayStart = float3(0, _SurfaceHeight, 0);
     float cosSunAngle = cosSunAngle01 * 2 - 1;
-    float sinSunAngle = 1 - sqrt(cosSunAngle * cosSunAngle);
+    float sinSunAngle = sqrt(saturate(1.0 - cosSunAngle * cosSunAngle));
     float3 lightDir = float3(sinSunAngle, cosSunAngle, 0);
     
     float cosViewAngle = cosViewAngle01 * 2 - 1;
-    float sinViewAngle = 1 - sqrt(cosViewAngle * cosViewAngle);
+    float sinViewAngle = sqrt(saturate(1.0 - cosViewAngle * cosViewAngle));
     float3 rayDir = float3(sinViewAngle, cosViewAngle, 0);
     
     float2 intersection = RaySphereIntersection(rayStart, rayDir, planetCenter, _PlanetRadius + _AtmosphereHeight);
@@ -191,4 +223,3 @@ void CSInScattering(uint3 id: SV_DispatchThreadID)
     float3 extinction;
     _RWinScatteringLUT[id.xy] = IntegrateInscattering(rayStart, rayDir, rayLength, planetCenter, 1, lightDir, SAMPLECOUNT_INSCATTERING, extinction);
 }
-

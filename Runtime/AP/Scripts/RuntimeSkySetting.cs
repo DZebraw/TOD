@@ -10,6 +10,10 @@ namespace DawnTOD
 
     {
         private const float SpaceEmissionTrackMaximum = 1000f;
+        internal const int AmbientLutRowCount = 3;
+        private const int AmbientSkyRow = 0;
+        private const int AmbientEquatorRow = 1;
+        private const int AmbientGroundRow = 2;
 
         [Header("ScatteringSetting")]
         private float distanceScale = 1.0f;
@@ -86,7 +90,7 @@ namespace DawnTOD
 
         private Vector2Int integrateCPDensityLUTSize = new Vector2Int(512, 512);
         private Vector2Int sunOnSurfaceLUTSize = new Vector2Int(512, 512);
-        private int ambientLUTSize = 512;
+        private int ambientLUTWidth = 512;
         private Vector2Int inScatteringLUTSize = new Vector2Int(1024, 1024);
 
         [Header("Debug/Output")] [NonSerialized]
@@ -96,7 +100,13 @@ namespace DawnTOD
         private Color m_MainLightColor;
 
         [NonSerialized] [ColorUsage(false, true)]
-        private Color m_AmbientColor;
+        private Color m_AmbientSkyColor;
+
+        [NonSerialized] [ColorUsage(false, true)]
+        private Color m_AmbientEquatorColor;
+
+        [NonSerialized] [ColorUsage(false, true)]
+        private Color m_AmbientGroundColor;
 
         // x : dot(-mianLightDir,worldUp)，y：height
         [NonSerialized]
@@ -114,7 +124,6 @@ namespace DawnTOD
         private RenderTexture m_InScatteringLUT;
 
         private Texture2D m_SunOnSurfaceLUTReadToCPU;
-        private Texture2D m_HemiSphereRandomNormlizedVecLUT;
         private bool m_AmbientReadbackPending;
         private bool m_AmbientReadbackWarningLogged;
 
@@ -303,7 +312,6 @@ namespace DawnTOD
             ComputeIntegrateCPdensity();
             ComputeSunOnSurface();
             ComputeInScattering();
-            ComputeHemiSphereRandomVectorLUT();
             ComputeAmbient();
         }
 
@@ -368,35 +376,23 @@ namespace DawnTOD
             ScatteringUtils.Dispatch(computerShader, index, inScatteringLUTSize);
         }
 
-        private void ComputeHemiSphereRandomVectorLUT()
-        {
-            if (m_HemiSphereRandomNormlizedVecLUT == null)
-            {
-                m_HemiSphereRandomNormlizedVecLUT = new Texture2D(512, 1, TextureFormat.RGB24, false, true);
-                m_HemiSphereRandomNormlizedVecLUT.filterMode = FilterMode.Point;
-                ;
-                m_HemiSphereRandomNormlizedVecLUT.Apply();
-                for (int i = 0; i < m_HemiSphereRandomNormlizedVecLUT.width; ++i)
-                {
-                    var randomVec = UnityEngine.Random.onUnitSphere;
-                    m_HemiSphereRandomNormlizedVecLUT.SetPixel(i, 0, new Color(randomVec.x, Mathf.Abs(randomVec.y), randomVec.z));
-                }
-            }
-        }
-
         private void ComputeAmbient()
         {
-            var size = new Vector2Int(ambientLUTSize, 1);
+            var size = new Vector2Int(ambientLUTWidth, AmbientLutRowCount);
             ScatteringUtils.CheckOrCreateLUT(ref m_AmbientLUT, size, RenderTextureFormat.DefaultHDR);
 
             int index = computerShader.FindKernel("CSAmbient");
 
             //Set Params
-            computerShader.SetTexture(index, ScatteringKeys.kRWhemiSphereRandomNormlizedVecLUT, m_HemiSphereRandomNormlizedVecLUT);
             computerShader.SetTexture(index, ScatteringKeys.kInScatteringLUT, m_InScatteringLUT);
             computerShader.SetTexture(index, ScatteringKeys.kRWambientLUT, m_AmbientLUT);
 
-            ScatteringUtils.Dispatch(computerShader, index, size);
+            // Each kernel invocation writes all three Trilight rows for one
+            // sun-angle sample, so only one dispatch row is required.
+            ScatteringUtils.Dispatch(
+                computerShader,
+                index,
+                new Vector2Int(ambientLUTWidth, 1));
         }
 
         private void UpdateAmbient()
@@ -420,17 +416,24 @@ namespace DawnTOD
 
             var lightDir = -mainLight.transform.forward;
             var cosAngle01 = Mathf.Clamp01(Vector3.Dot(Vector3.up, lightDir) * 0.5f + 0.5f);
+            int lutWidth = m_AmbientLUT.width;
             m_AmbientReadbackPending = true;
 
             if (!ScatteringUtils.RequestRTpixelsBackToCPU(
-                    m_AmbientLUT, TextureFormat.RGBA32,
-                    request => OnAmbientReadbackCompleted(request, cosAngle01)))
+                    m_AmbientLUT, TextureFormat.RGBAFloat,
+                    request => OnAmbientReadbackCompleted(
+                        request,
+                        cosAngle01,
+                        lutWidth)))
             {
                 m_AmbientReadbackPending = false;
             }
         }
 
-        private void OnAmbientReadbackCompleted(AsyncGPUReadbackRequest request, float cosAngle01)
+        private void OnAmbientReadbackCompleted(
+            AsyncGPUReadbackRequest request,
+            float cosAngle01,
+            int lutWidth)
         {
             if (this == null)
                 return;
@@ -439,14 +442,78 @@ namespace DawnTOD
             if (!isActiveAndEnabled || request.hasError)
                 return;
 
-            var pixels = request.GetData<Color32>();
-            if (pixels.Length == 0)
+            var pixels = request.GetData<Color>();
+            if (lutWidth <= 0 || pixels.Length < lutWidth * AmbientLutRowCount)
                 return;
 
-            var pixelIndex = Mathf.Clamp(Mathf.FloorToInt(cosAngle01 * pixels.Length), 0, pixels.Length - 1);
-            var ambient = (Color)pixels[pixelIndex];
-            RenderSettings.ambientLight = ambient.gamma;
-            m_AmbientColor = ambient;
+            Color sky = pixels[GetAmbientLutPixelIndex(
+                lutWidth,
+                cosAngle01,
+                AmbientSkyRow)];
+            Color equator = pixels[GetAmbientLutPixelIndex(
+                lutWidth,
+                cosAngle01,
+                AmbientEquatorRow)];
+            Color ground = pixels[GetAmbientLutPixelIndex(
+                lutWidth,
+                cosAngle01,
+                AmbientGroundRow)];
+
+            ApplyTrilightAmbient(sky, equator, ground);
+            m_AmbientSkyColor = sky;
+            m_AmbientEquatorColor = equator;
+            m_AmbientGroundColor = ground;
+        }
+
+        internal static int GetAmbientLutPixelIndex(
+            int lutWidth,
+            float cosAngle01,
+            int row)
+        {
+            if (lutWidth <= 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(lutWidth));
+            }
+
+            if (row < 0 || row >= AmbientLutRowCount)
+            {
+                throw new ArgumentOutOfRangeException(nameof(row));
+            }
+
+            int column = Mathf.Clamp(
+                Mathf.FloorToInt(Mathf.Clamp01(cosAngle01) * lutWidth),
+                0,
+                lutWidth - 1);
+            return row * lutWidth + column;
+        }
+
+        internal static void ApplyTrilightAmbient(
+            Color sky,
+            Color equator,
+            Color ground)
+        {
+            RenderSettings.ambientSkyColor = SanitizeAmbientColor(sky).gamma;
+            RenderSettings.ambientEquatorColor =
+                SanitizeAmbientColor(equator).gamma;
+            RenderSettings.ambientGroundColor =
+                SanitizeAmbientColor(ground).gamma;
+            RenderSettings.ambientMode = AmbientMode.Trilight;
+        }
+
+        private static Color SanitizeAmbientColor(Color color)
+        {
+            return new Color(
+                SanitizeAmbientChannel(color.r),
+                SanitizeAmbientChannel(color.g),
+                SanitizeAmbientChannel(color.b),
+                1f);
+        }
+
+        private static float SanitizeAmbientChannel(float value)
+        {
+            return float.IsNaN(value) || float.IsInfinity(value)
+                ? 0f
+                : Mathf.Max(0f, value);
         }
 
 
