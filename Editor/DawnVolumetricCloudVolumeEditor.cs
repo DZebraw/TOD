@@ -148,8 +148,17 @@ namespace DawnTODEditor
             DrawDensityBias();
             PropertyField(m_DensityMultiplier);
             PropertyField(m_ShapeNoiseWeights);
-            PropertyField(m_DetailWeights);
-            PropertyField(m_DetailNoiseWeight);
+            PropertyField(
+                m_DetailWeights,
+                new GUIContent(
+                    "Detail Contrast",
+                    "Contrast exponent applied to the detail texture before it erodes cloud surfaces."));
+            PropertyField(
+                m_DetailNoiseWeight,
+                new GUIContent(
+                    "Detail Erosion Strength",
+                    "Controls how strongly the detail texture erodes cloud surfaces. Zero disables the detail texture contribution."));
+            DrawDetailNoiseWarnings();
             PropertyField(
                 m_HeightProfileBlend,
                 new GUIContent(
@@ -403,6 +412,35 @@ namespace DawnTODEditor
                 {
                     m_DensityOffset.value.floatValue = newDensityBias * 100f;
                 }
+            }
+        }
+
+        private void DrawDetailNoiseWarnings()
+        {
+            if (m_DetailNoiseWeight.overrideState.boolValue &&
+                m_DetailNoiseWeight.value.floatValue <= 0f)
+            {
+                EditorGUILayout.HelpBox(
+                    "Detail Noise has no effect because Detail Erosion Strength is zero.",
+                    MessageType.Warning);
+            }
+
+            if (!m_ShapeTiling.overrideState.boolValue ||
+                !m_DetailTiling.overrideState.boolValue)
+            {
+                return;
+            }
+
+            float shapeTiling = Mathf.Max(
+                m_ShapeTiling.value.floatValue,
+                MinTiling);
+            float detailFrequency =
+                m_DetailTiling.value.floatValue / shapeTiling;
+            if (detailFrequency <= 1f)
+            {
+                EditorGUILayout.HelpBox(
+                    "Detail Frequency is not higher than the base Shape Frequency, so the detail texture cannot produce fine cloud structure.",
+                    MessageType.Warning);
             }
         }
     }

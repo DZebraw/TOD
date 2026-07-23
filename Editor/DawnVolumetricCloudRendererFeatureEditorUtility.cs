@@ -57,7 +57,7 @@ namespace DawnTODEditor
             cloud.shapeNoise.value = Resources.Load<Texture3D>(
                 "DawnTOD/VolumetricCloud/ExampleNoise13D");
             cloud.detailNoise.value = Resources.Load<Texture3D>(
-                "DawnTOD/VolumetricCloud/BunnySDF_WithoutNormal");
+                "DawnTOD/VolumetricCloud/cloudDetailTexture");
             cloud.weatherMap.value = Resources.Load<Texture2D>(
                 "DawnTOD/VolumetricCloud/Substance_graph_output");
             cloud.maskNoise.value = Resources.Load<Texture2D>(

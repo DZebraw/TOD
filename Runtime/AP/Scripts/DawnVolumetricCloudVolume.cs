@@ -80,9 +80,11 @@ namespace DawnTOD
         public Vector4Parameter shapeNoiseWeights =
             new Vector4Parameter(new Vector4(3.53f, 19.9f, 1.7f, -15f));
 
+        [Tooltip("Contrast exponent applied to the detail texture before erosion.")]
         public FloatParameter detailWeights = new FloatParameter(1.5f);
 
-        public MinFloatParameter detailNoiseWeight = new MinFloatParameter(6.4f, 0f);
+        [Tooltip("Strength of detail-noise erosion along cloud surfaces. Zero disables the detail texture contribution.")]
+        public MinFloatParameter detailNoiseWeight = new MinFloatParameter(0.5f, 0f);
 
         [Tooltip("Legacy height-gradient blend retained for exact rollback when Height Profile Blend is zero.")]
         public ClampedFloatParameter heightWeights = new ClampedFloatParameter(0.4f, 0f, 1f);
@@ -197,7 +199,7 @@ namespace DawnTOD
         {
             return configuredTexture as Texture3D ??
                    (defaultDetailNoise ??= Resources.Load<Texture3D>(
-                       ResourceRoot + "BunnySDF_WithoutNormal"));
+                       ResourceRoot + "cloudDetailTexture"));
         }
 
         internal static Texture2D GetWeatherMap(Texture configuredTexture)
