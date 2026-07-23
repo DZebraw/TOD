@@ -64,6 +64,10 @@ namespace DawnTOD
         public ClampedFloatParameter coverage =
             new ClampedFloatParameter(0.65f, 0f, 1f);
 
+        [Tooltip("World-space tiling of the weather and coverage maps. This remains independent from Bounds Size so enlarging the bounds reveals more clouds instead of stretching them.")]
+        public MinFloatParameter weatherMapTiling =
+            new MinFloatParameter(1f / 1500f, 0.000001f);
+
         [Header("Density")]
         public MinFloatParameter shapeTiling = new MinFloatParameter(0.002f, 0.000001f);
 

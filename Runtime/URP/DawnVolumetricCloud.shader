@@ -52,6 +52,7 @@ Shader "Hidden/DawnTOD/VolumetricCloud"
         float4 _DawnCloudBlueNoiseScale;
 
         float _DawnCloudCoverage;
+        float _DawnCloudWeatherMapTiling;
         float _DawnCloudShapeTiling;
         float _DawnCloudDetailTiling;
         float _DawnCloudDensityOffset;
@@ -153,9 +154,11 @@ Shader "Hidden/DawnTOD/VolumetricCloud"
                              float3(shapeSpeed, shapeSpeed * 0.2, 0.0);
             float3 detailUv = rayPosition * _DawnCloudDetailTiling +
                               float3(detailSpeed, detailSpeed * 0.2, 0.0);
+            // Keep the horizontal weather pattern at a fixed world scale.
+            // Bounds expansion should reveal more clouds, not resize them.
             float2 weatherUv =
-                (boundsSize.xz * 0.5 + (rayPosition.xz - boundsCenter.xz)) /
-                max(boundsSize.x, boundsSize.z);
+                (rayPosition.xz - boundsCenter.xz) *
+                _DawnCloudWeatherMapTiling + 0.5;
 
             float maskValue = SAMPLE_TEXTURE2D_LOD(
                 _DawnCloudMaskNoise,

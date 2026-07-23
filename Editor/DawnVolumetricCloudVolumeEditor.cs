@@ -31,6 +31,7 @@ namespace DawnTODEditor
         private SerializedDataParameter m_RayStepLength;
         private SerializedDataParameter m_RayOffsetStrength;
         private SerializedDataParameter m_Coverage;
+        private SerializedDataParameter m_WeatherMapTiling;
         private SerializedDataParameter m_ShapeTiling;
         private SerializedDataParameter m_DetailTiling;
         private SerializedDataParameter m_DensityOffset;
@@ -78,6 +79,7 @@ namespace DawnTODEditor
             m_RayStepLength = Unpack(o.Find(x => x.rayStepLength));
             m_RayOffsetStrength = Unpack(o.Find(x => x.rayOffsetStrength));
             m_Coverage = Unpack(o.Find(x => x.coverage));
+            m_WeatherMapTiling = Unpack(o.Find(x => x.weatherMapTiling));
             m_ShapeTiling = Unpack(o.Find(x => x.shapeTiling));
             m_DetailTiling = Unpack(o.Find(x => x.detailTiling));
             m_DensityOffset = Unpack(o.Find(x => x.densityOffset));
@@ -140,6 +142,7 @@ namespace DawnTODEditor
                 new GUIContent(
                     "Cloud Coverage",
                     "Controls horizontal cloud amount without changing the density of fully covered regions."));
+            DrawWeatherPatternSize();
             DrawShapeSize();
             DrawDetailFrequency();
             DrawDensityBias();
@@ -267,6 +270,38 @@ namespace DawnTODEditor
                 if (EditorGUI.EndChangeCheck())
                 {
                     m_PhaseParameters.value.vector4Value = phase;
+                }
+            }
+        }
+
+        private void DrawWeatherPatternSize()
+        {
+            using (var scope = new OverridablePropertyScope(
+                       m_WeatherMapTiling,
+                       new GUIContent(
+                           "Weather Pattern Size (World Units)",
+                           "World-space length of one weather-map repeat. Bounds Size only reveals more of this fixed-scale pattern."),
+                       this))
+            {
+                if (!scope.displayed)
+                {
+                    return;
+                }
+
+                float tiling = Mathf.Max(
+                    m_WeatherMapTiling.value.floatValue,
+                    MinTiling);
+                float patternSize = 1f / tiling;
+                EditorGUI.BeginChangeCheck();
+                float newPatternSize = EditorGUILayout.Slider(
+                    scope.label,
+                    patternSize,
+                    MinShapeSize,
+                    MaxShapeSize);
+                if (EditorGUI.EndChangeCheck())
+                {
+                    m_WeatherMapTiling.value.floatValue =
+                        1f / Mathf.Max(newPatternSize, MinShapeSize);
                 }
             }
         }

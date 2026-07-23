@@ -99,6 +99,7 @@ namespace DawnTOD
             public readonly float RayStepLength;
             public readonly float RayOffsetStrength;
             public readonly float Coverage;
+            public readonly float WeatherMapTiling;
             public readonly float ShapeTiling;
             public readonly float DetailTiling;
             public readonly float DensityOffset;
@@ -140,6 +141,7 @@ namespace DawnTOD
                 float rayStepLength,
                 float rayOffsetStrength,
                 float coverage,
+                float weatherMapTiling,
                 float shapeTiling,
                 float detailTiling,
                 float densityOffset,
@@ -176,6 +178,7 @@ namespace DawnTOD
                 RayStepLength = rayStepLength;
                 RayOffsetStrength = rayOffsetStrength;
                 Coverage = Mathf.Clamp01(coverage);
+                WeatherMapTiling = weatherMapTiling;
                 ShapeTiling = shapeTiling;
                 DetailTiling = detailTiling;
                 DensityOffset = densityOffset;
@@ -260,6 +263,7 @@ namespace DawnTOD
                     Mathf.Max(0.0001f, cloud.rayStepLength.value),
                     Mathf.Max(0f, cloud.rayOffsetStrength.value),
                     cloud.coverage.value,
+                    Mathf.Max(0.000001f, cloud.weatherMapTiling.value),
                     Mathf.Max(0.000001f, cloud.shapeTiling.value),
                     Mathf.Max(0.000001f, cloud.detailTiling.value),
                     cloud.densityOffset.value,
@@ -361,6 +365,8 @@ namespace DawnTOD
                 Shader.PropertyToID("_DawnCloudBlueNoiseScale");
             private static readonly int CoverageId =
                 Shader.PropertyToID("_DawnCloudCoverage");
+            private static readonly int WeatherMapTilingId =
+                Shader.PropertyToID("_DawnCloudWeatherMapTiling");
             private static readonly int ShapeTilingId =
                 Shader.PropertyToID("_DawnCloudShapeTiling");
             private static readonly int DetailTilingId =
@@ -693,6 +699,9 @@ namespace DawnTOD
                 properties.SetVector(SpeedWarpId, settings.SpeedWarp);
                 properties.SetVector(BlueNoiseScaleId, blueNoiseScale);
                 properties.SetFloat(CoverageId, settings.Coverage);
+                properties.SetFloat(
+                    WeatherMapTilingId,
+                    settings.WeatherMapTiling);
                 properties.SetFloat(ShapeTilingId, settings.ShapeTiling);
                 properties.SetFloat(DetailTilingId, settings.DetailTiling);
                 properties.SetFloat(DensityOffsetId, settings.DensityOffset);
