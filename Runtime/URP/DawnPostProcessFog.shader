@@ -30,6 +30,8 @@ Shader "Hidden/DawnTOD/PostProcessFog"
             float4 _DawnFogParameters;
             float4 _DawnFogAlbedo;
             float _DawnFogAffectSky;
+            float _DawnFogCloudCoverageAvailable;
+            TEXTURE2D_X(_DawnCloudTexture);
 
             float FogDensityAtHeight(float height, float baseHeight, float maximumHeight)
             {
@@ -59,6 +61,22 @@ Shader "Hidden/DawnTOD/PostProcessFog"
                 if (isSky && _DawnFogAffectSky < 0.5)
                 {
                     return source;
+                }
+
+                if (_DawnFogCloudCoverageAvailable > 0.5)
+                {
+                    float cloudTransmittance = SAMPLE_TEXTURE2D_X_LOD(
+                        _DawnCloudTexture,
+                        sampler_LinearClamp,
+                        uv,
+                        0).a;
+                    // Clouds already evaluate their own atmosphere. Fogging the
+                    // composited result with opaque depth would stamp terrain
+                    // silhouettes into the same cloud layer.
+                    if (1.0 - cloudTransmittance > 0.0025)
+                    {
+                        return source;
+                    }
                 }
 
                 // The pass is full-screen, but fog density is evaluated in world

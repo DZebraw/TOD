@@ -103,6 +103,7 @@ namespace DawnTOD
             public readonly float CloudShaftDecay;
             public readonly int CloudShaftSampleCount;
             public readonly Vector3 SunViewportPosition;
+            public readonly bool HasActiveClouds;
 
             private VolumetricLightSettings(
                 float intensity,
@@ -118,7 +119,8 @@ namespace DawnTOD
                 float cloudShaftLength,
                 float cloudShaftDecay,
                 int cloudShaftSampleCount,
-                Vector3 sunViewportPosition)
+                Vector3 sunViewportPosition,
+                bool hasActiveClouds)
             {
                 Intensity = intensity;
                 ScatteringTint = scatteringTint;
@@ -134,6 +136,7 @@ namespace DawnTOD
                 CloudShaftDecay = cloudShaftDecay;
                 CloudShaftSampleCount = cloudShaftSampleCount;
                 SunViewportPosition = sunViewportPosition;
+                HasActiveClouds = hasActiveClouds;
             }
 
             public static VolumetricLightSettings FromVolume(
@@ -168,7 +171,8 @@ namespace DawnTOD
                     Mathf.Clamp(volumetricLight.cloudShaftLength.value, 0.05f, 1f),
                     Mathf.Clamp(volumetricLight.cloudShaftDecay.value, 0.8f, 1f),
                     Mathf.Clamp(volumetricLight.cloudShaftSampleCount.value, 4, 64),
-                    sunViewportPosition);
+                    sunViewportPosition,
+                    hasActiveClouds);
             }
         }
 
@@ -189,6 +193,9 @@ namespace DawnTOD
                 Shader.PropertyToID("_DawnDirectionalLightCloudShaftParameters");
             private static readonly int SunScreenPositionId =
                 Shader.PropertyToID("_DawnDirectionalLightSunScreenPosition");
+            private static readonly int CloudCoverageAvailableId =
+                Shader.PropertyToID(
+                    "_DawnDirectionalLightCloudCoverageAvailable");
             private static readonly Vector4 FullScreenScaleBias =
                 new Vector4(1f, 1f, 0f, 0f);
             private static readonly MaterialPropertyBlock PropertyBlock =
@@ -284,6 +291,9 @@ namespace DawnTOD
                             settings.SunViewportPosition.y,
                             settings.SunViewportPosition.z > 0f ? 1f : 0f,
                             0f));
+                    PropertyBlock.SetFloat(
+                        CloudCoverageAvailableId,
+                        settings.HasActiveClouds ? 1f : 0f);
 
                     CoreUtils.SetRenderTarget(cmd, cameraColor);
                     cmd.DrawProcedural(

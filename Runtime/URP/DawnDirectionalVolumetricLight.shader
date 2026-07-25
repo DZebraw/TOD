@@ -35,6 +35,7 @@ Shader "Hidden/DawnTOD/DirectionalVolumetricLight"
             float4 _DawnDirectionalLightScatteringTint;
             float4 _DawnDirectionalLightCloudShaftParameters;
             float4 _DawnDirectionalLightSunScreenPosition;
+            float _DawnDirectionalLightCloudCoverageAvailable;
             TEXTURE2D_X(_DawnCloudTexture);
             TEXTURE2D(_DawnCloudShadowTexture);
             float4x4 _DawnCloudWorldToShadow;
@@ -243,6 +244,22 @@ Shader "Hidden/DawnTOD/DirectionalVolumetricLight"
                 if (isSky && _DawnDirectionalLightQualityParameters.w < 0.5)
                 {
                     return source;
+                }
+
+                if (_DawnDirectionalLightCloudCoverageAvailable > 0.5)
+                {
+                    float cloudTransmittance = SAMPLE_TEXTURE2D_X_LOD(
+                        _DawnCloudTexture,
+                        sampler_LinearClamp,
+                        uv,
+                        0).a;
+                    // This pass reconstructs an opaque receiver from scene
+                    // depth. Applying it after cloud composition would classify
+                    // one cloud differently over terrain and sky.
+                    if (1.0 - cloudTransmittance > 0.0025)
+                    {
+                        return source;
+                    }
                 }
 
                 // UNITY_MATRIX_I_VP is the inverse GPU view-projection matrix.

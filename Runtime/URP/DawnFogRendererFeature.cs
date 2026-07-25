@@ -49,7 +49,13 @@ namespace DawnTOD
                 return;
             }
 
-            fogPass.Setup(fogMaterial, FogSettings.FromVolume(fog));
+            DawnVolumetricCloudVolume cloud =
+                stack?.GetComponent<DawnVolumetricCloudVolume>();
+            fogPass.Setup(
+                fogMaterial,
+                FogSettings.FromVolume(
+                    fog,
+                    cloud != null && cloud.IsActive()));
             renderer.EnqueuePass(fogPass);
         }
 
@@ -69,6 +75,7 @@ namespace DawnTOD
             public readonly float MaximumFogDistance;
             public readonly Color Albedo;
             public readonly bool AffectSky;
+            public readonly bool HasActiveClouds;
 
             private FogSettings(
                 float meanFreePath,
@@ -76,7 +83,8 @@ namespace DawnTOD
                 float maximumHeight,
                 float maximumFogDistance,
                 Color albedo,
-                bool affectSky)
+                bool affectSky,
+                bool hasActiveClouds)
             {
                 MeanFreePath = meanFreePath;
                 BaseHeight = baseHeight;
@@ -84,9 +92,12 @@ namespace DawnTOD
                 MaximumFogDistance = maximumFogDistance;
                 Albedo = albedo;
                 AffectSky = affectSky;
+                HasActiveClouds = hasActiveClouds;
             }
 
-            public static FogSettings FromVolume(DawnFogVolume fog)
+            public static FogSettings FromVolume(
+                DawnFogVolume fog,
+                bool hasActiveClouds)
             {
                 float baseHeight = fog.baseHeight.value;
                 return new FogSettings(
@@ -95,7 +106,8 @@ namespace DawnTOD
                     Mathf.Max(baseHeight + 0.01f, fog.maximumHeight.value),
                     Mathf.Max(0.01f, fog.maximumFogDistance.value),
                     fog.albedo.value,
-                    fog.affectSky.value);
+                    fog.affectSky.value,
+                    hasActiveClouds);
             }
         }
 
@@ -111,6 +123,8 @@ namespace DawnTOD
                 Shader.PropertyToID("_DawnFogAlbedo");
             private static readonly int FogAffectSkyId =
                 Shader.PropertyToID("_DawnFogAffectSky");
+            private static readonly int FogCloudCoverageAvailableId =
+                Shader.PropertyToID("_DawnFogCloudCoverageAvailable");
             private static readonly Vector4 FullScreenScaleBias =
                 new Vector4(1f, 1f, 0f, 0f);
             private static readonly MaterialPropertyBlock PropertyBlock =
@@ -184,6 +198,9 @@ namespace DawnTOD
                     PropertyBlock.SetFloat(
                         FogAffectSkyId,
                         settings.AffectSky ? 1f : 0f);
+                    PropertyBlock.SetFloat(
+                        FogCloudCoverageAvailableId,
+                        settings.HasActiveClouds ? 1f : 0f);
 
                     CoreUtils.SetRenderTarget(cmd, cameraColor);
                     cmd.DrawProcedural(

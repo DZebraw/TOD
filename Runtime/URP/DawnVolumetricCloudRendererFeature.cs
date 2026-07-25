@@ -325,6 +325,14 @@ namespace DawnTOD
                 Shader.PropertyToID("_DawnCloudLowDepthTexture");
             private static readonly int CloudTextureId =
                 Shader.PropertyToID("_DawnCloudTexture");
+            private static readonly int CloudReferenceTextureId =
+                Shader.PropertyToID("_DawnCloudReferenceTexture");
+            private static readonly int CloudSceneTextureId =
+                Shader.PropertyToID("_DawnCloudSceneTexture");
+            private static readonly int CloudSkyTextureId =
+                Shader.PropertyToID("_DawnCloudSkyTexture");
+            private static readonly int CloudSkyCorrectionId =
+                Shader.PropertyToID("_DawnCloudSkyCorrection");
             private static readonly int CloudShadowTextureId =
                 Shader.PropertyToID("_DawnCloudShadowTexture");
             private static readonly int CloudWorldToShadowId =
@@ -405,11 +413,16 @@ namespace DawnTOD
                 new MaterialPropertyBlock();
             private static readonly Vector4 FullScreenScaleBias =
                 new Vector4(1f, 1f, 0f, 0f);
+            private readonly RenderTargetIdentifier[] cloudTargets =
+                new RenderTargetIdentifier[2];
 
             private Material material;
             private CloudSettings settings;
             private RTHandle lowDepthTexture;
             private RTHandle cloudTexture;
+            private RTHandle cloudReferenceTexture;
+            private RTHandle cloudSceneTexture;
+            private RTHandle cloudSkyTexture;
             private RTHandle cloudShadowTexture;
             private Vector4 blueNoiseScale;
             private Vector3 lightDirection;
@@ -468,6 +481,24 @@ namespace DawnTOD
                     FilterMode.Bilinear,
                     TextureWrapMode.Clamp,
                     name: "_DawnVolumetricCloudTexture");
+                RenderingUtils.ReAllocateIfNeeded(
+                    ref cloudReferenceTexture,
+                    cloudDescriptor,
+                    FilterMode.Bilinear,
+                    TextureWrapMode.Clamp,
+                    name: "_DawnVolumetricCloudReference");
+                RenderingUtils.ReAllocateIfNeeded(
+                    ref cloudSceneTexture,
+                    cloudDescriptor,
+                    FilterMode.Bilinear,
+                    TextureWrapMode.Clamp,
+                    name: "_DawnVolumetricCloudScene");
+                RenderingUtils.ReAllocateIfNeeded(
+                    ref cloudSkyTexture,
+                    cloudDescriptor,
+                    FilterMode.Bilinear,
+                    TextureWrapMode.Clamp,
+                    name: "_DawnVolumetricCloudSky");
 
                 var cloudShadowDescriptor = new RenderTextureDescriptor(
                     CloudShadowResolution,
@@ -505,12 +536,30 @@ namespace DawnTOD
                 ref RenderingData renderingData)
             {
                 if (material == null || lowDepthTexture == null ||
-                    cloudTexture == null || cloudShadowTexture == null)
+                    cloudTexture == null || cloudReferenceTexture == null ||
+                    cloudSceneTexture == null ||
+                    cloudSkyTexture == null || cloudShadowTexture == null)
                 {
                     return;
                 }
 
                 CommandBuffer cmd = CommandBufferPool.Get();
+                Camera camera = renderingData.cameraData.camera;
+                bool correctTransmittedBackground =
+                    camera.clearFlags == CameraClearFlags.Skybox &&
+                    RenderSettings.skybox != null;
+                if (correctTransmittedBackground)
+                {
+                    CoreUtils.SetRenderTarget(
+                        cmd,
+                        cloudSkyTexture,
+                        ClearFlag.Color,
+                        Color.clear);
+                    context.ExecuteCommandBuffer(cmd);
+                    cmd.Clear();
+                    context.DrawSkybox(camera);
+                }
+
                 using (new ProfilingScope(cmd, profilingSampler))
                 {
                     PropertyBlock.Clear();
@@ -543,7 +592,12 @@ namespace DawnTOD
 
                     SetCloudProperties(PropertyBlock);
                     PropertyBlock.SetTexture(LowDepthTextureId, lowDepthTexture);
-                    CoreUtils.SetRenderTarget(cmd, cloudTexture);
+                    cloudTargets[0] = cloudTexture.nameID;
+                    cloudTargets[1] = cloudReferenceTexture.nameID;
+                    CoreUtils.SetRenderTarget(
+                        cmd,
+                        cloudTargets,
+                        cloudTexture);
                     CoreUtils.DrawFullScreen(cmd, material, PropertyBlock, 1);
 
                     // The directional-light pass runs immediately after clouds.
@@ -551,12 +605,32 @@ namespace DawnTOD
                     // can shape screen-space crepuscular rays.
                     cmd.SetGlobalTexture(CloudTextureId, cloudTexture.nameID);
 
+                    RTHandle cameraColor =
+                        renderingData.cameraData.renderer.cameraColorTargetHandle;
+                    CoreUtils.SetRenderTarget(cmd, cloudSceneTexture);
+                    Blitter.BlitTexture(
+                        cmd,
+                        cameraColor,
+                        FullScreenScaleBias,
+                        0f,
+                        false);
+
                     PropertyBlock.Clear();
                     PropertyBlock.SetVector(BlitScaleBiasId, FullScreenScaleBias);
                     PropertyBlock.SetTexture(CloudTextureId, cloudTexture);
+                    PropertyBlock.SetTexture(
+                        CloudReferenceTextureId,
+                        cloudReferenceTexture);
+                    PropertyBlock.SetTexture(
+                        CloudSceneTextureId,
+                        cloudSceneTexture);
+                    PropertyBlock.SetTexture(CloudSkyTextureId, cloudSkyTexture);
+                    PropertyBlock.SetFloat(
+                        CloudSkyCorrectionId,
+                        correctTransmittedBackground ? 4f : 0f);
                     CoreUtils.SetRenderTarget(
                         cmd,
-                        renderingData.cameraData.renderer.cameraColorTargetHandle);
+                        cameraColor);
                     CoreUtils.DrawFullScreen(cmd, material, PropertyBlock, 2);
                 }
 
@@ -570,6 +644,12 @@ namespace DawnTOD
                 lowDepthTexture = null;
                 cloudTexture?.Release();
                 cloudTexture = null;
+                cloudReferenceTexture?.Release();
+                cloudReferenceTexture = null;
+                cloudSceneTexture?.Release();
+                cloudSceneTexture = null;
+                cloudSkyTexture?.Release();
+                cloudSkyTexture = null;
                 cloudShadowTexture?.Release();
                 cloudShadowTexture = null;
             }
