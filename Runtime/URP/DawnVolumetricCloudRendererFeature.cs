@@ -211,8 +211,11 @@ namespace DawnTOD
                 ColorB = colorB;
                 ColorOffset1 = colorOffset1;
                 ColorOffset2 = colorOffset2;
-                LightAbsorptionTowardSun = lightAbsorptionTowardSun;
-                LightAbsorptionThroughCloud = lightAbsorptionThroughCloud;
+                LightAbsorptionTowardSun = Mathf.Clamp01(
+                    lightAbsorptionTowardSun);
+                LightAbsorptionThroughCloud = Mathf.Max(
+                    0.05f,
+                    lightAbsorptionThroughCloud);
                 PhaseParameters = SanitizePhaseParameters(phaseParameters);
                 PhaseMinimum = Mathf.Clamp01(phaseMinimum);
                 PowderEffectIntensity = Mathf.Clamp01(powderEffectIntensity);
@@ -236,7 +239,7 @@ namespace DawnTOD
                 parameters.x = Mathf.Clamp(parameters.x, 0f, 0.9f);
                 parameters.y = Mathf.Clamp(parameters.y, -0.75f, 0f);
                 parameters.z = Mathf.Clamp01(parameters.z);
-                parameters.w = Mathf.Max(0f, parameters.w);
+                parameters.w = Mathf.Clamp(parameters.w, 0f, 4f);
                 return parameters;
             }
 

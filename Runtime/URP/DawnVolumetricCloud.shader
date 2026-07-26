@@ -88,6 +88,9 @@ Shader "Hidden/DawnTOD/VolumetricCloud"
         static const float DawnCloudDiffuseFieldAlbedo = 0.999;
         static const float DawnCloudDiffuseFieldKappaOdScale =
             0.05477225575;
+        // Keeps the historical extinction response of the default 50-unit
+        // cloud layer when a taller Bounds Size is used for scene coverage.
+        static const float DawnCloudReferenceLayerHeight = 50.0;
 
         float DawnCloudRemap(
             float value,
@@ -132,12 +135,7 @@ Shader "Hidden/DawnTOD/VolumetricCloud"
                 forward,
                 saturate(_DawnCloudPhaseParameters.z)) *
                 max(0.0, _DawnCloudPhaseParameters.w);
-            // Preserve a configurable amount of direct-light fill away from
-            // the forward lobe so optically thin silhouettes do not collapse
-            // into a dark outline against the sky.
-            return max(
-                saturate(_DawnCloudPhaseMinimum),
-                directionalPhase);
+            return directionalPhase;
         }
 
         float3 DawnCloudSafeRayDirection(float3 direction)
@@ -465,22 +463,30 @@ Shader "Hidden/DawnTOD/VolumetricCloud"
             return transmittance * lightColor * cloudTint;
         }
 
-        float DawnCloudPowderEffect(float density, float cosineAngle)
+        float DawnCloudPowderTransmittance(
+            float directTransmittance,
+            float cosineAngle)
         {
-            float powder = saturate(
-                (1.0 - exp(-max(density, 0.0) * 4.0)) * 2.0);
-            float awayFromSun = smoothstep(0.5, -0.5, cosineAngle);
+            float beerTransmittance = saturate(directTransmittance);
+            // Beer-Powder preserves clear and opaque limits while lifting the
+            // medium optical depths that form a forward-scattering silver edge.
+            float beerPowderTransmittance =
+                2.0 * beerTransmittance *
+                (1.0 - beerTransmittance * beerTransmittance);
+            float forwardWeight = smoothstep(0.0, 1.0, cosineAngle);
             return lerp(
-                1.0,
-                powder,
-                awayFromSun * saturate(_DawnCloudPowderEffectIntensity));
+                beerTransmittance,
+                max(beerTransmittance, beerPowderTransmittance),
+                forwardWeight *
+                saturate(_DawnCloudPowderEffectIntensity));
         }
 
         DawnCloudLightResult DawnCloudLightMarch(
             float3 position,
             float localHeight,
             float3 lightDirection,
-            float3 lightColor)
+            float3 lightColor,
+            float cosineAngle)
         {
             float distanceInsideBox = DawnCloudRayBoxDistance(
                 _DawnCloudBoundsMin.xyz,
@@ -490,43 +496,19 @@ Shader "Hidden/DawnTOD/VolumetricCloud"
             float cloudLayerHeight = max(
                 _DawnCloudBoundsMax.y - _DawnCloudBoundsMin.y,
                 0.0001);
-            float horizontalDirectionLength = length(lightDirection.xz);
-            float maximumNoiseTiling = max(
-                _DawnCloudShapeTiling,
-                _DawnCloudDetailTiling);
-            // Keep shadow samples dense enough to resolve both horizontal 3D
-            // noise and the vertical density profile as the sun angle changes.
-            float horizontalStepLength = 0.5 / max(
-                maximumNoiseTiling * horizontalDirectionLength,
-                0.0001);
-            float verticalStepLength = cloudLayerHeight * 0.25 / max(
-                abs(lightDirection.y),
-                0.0001);
-            float targetStepLength = max(
-                min(horizontalStepLength, verticalStepLength),
-                0.0001);
-            const int minimumLightStepCount = 4;
             const int maximumLightStepCount = 16;
-            int lightStepCount = clamp(
-                (int)ceil(distanceInsideBox / targetStepLength),
-                minimumLightStepCount,
-                maximumLightStepCount);
             const float lightConeRatio = 2.0;
             const float minimumLightStepSize = 5.0;
             const float maximumLightMarchDistance = 6000.0;
             float lightMarchDistance = min(
                 distanceInsideBox,
                 maximumLightMarchDistance);
-            float lightConePower = pow(
-                lightConeRatio,
-                (float)lightStepCount);
-            float lightStepSize = lightMarchDistance *
-                (lightConeRatio - 1.0) /
-                max(lightConePower - 1.0, 0.0001);
-            lightStepSize = max(
-                lightStepSize,
-                minimumLightStepSize);
-            float currentLightStepSize = lightStepSize;
+            // Keep the complete cone schedule independent of the AABB exit
+            // distance. A data-dependent integer step count repositions every
+            // sample when it changes and exposes those thresholds as planar
+            // lighting seams. The final segment below is truncated smoothly,
+            // so entering another cone step starts with zero contribution.
+            float currentLightStepSize = minimumLightStepSize;
             float lightDistanceTravelled = 0.0;
             float opticalDepth = 0.0;
             float diffuseOpticalDepth = 0.0;
@@ -570,8 +552,7 @@ Shader "Hidden/DawnTOD/VolumetricCloud"
                  stepIndex < maximumLightStepCount;
                  stepIndex++)
             {
-                if (stepIndex >= lightStepCount ||
-                    lightDistanceTravelled >= lightMarchDistance)
+                if (lightDistanceTravelled >= lightMarchDistance)
                 {
                     break;
                 }
@@ -588,10 +569,9 @@ Shader "Hidden/DawnTOD/VolumetricCloud"
                     lightDistanceTravelled + stepSize * 0.5;
                 float3 samplePosition =
                     position + lightDirection * sourceDistance;
-                float lightNoiseLod =
-                    (float)stepIndex /
-                    max((float)lightStepCount - 1.0, 1.0) *
-                    3.0;
+                float lightNoiseLod = saturate(
+                    sourceDistance /
+                    max(lightMarchDistance, 0.0001)) * 3.0;
                 float density = max(
                     0.0,
                     DawnCloudSampleDensity(
@@ -641,10 +621,26 @@ Shader "Hidden/DawnTOD/VolumetricCloud"
                 currentLightStepSize *= lightConeRatio;
             }
 
+            // A taller Bounds Height should not silently multiply solar
+            // extinction. Normalize tall layers to the historical 50-unit
+            // scale, and use the same depth for direct light, internal light,
+            // and ambient occlusion so those paths cannot disagree.
+            float solarOpticalDepthScale = min(
+                1.0,
+                DawnCloudReferenceLayerHeight / cloudLayerHeight);
+            float solarOpticalDepth =
+                opticalDepth * solarOpticalDepthScale;
+            float directOpticalDepth = solarOpticalDepth;
             float directTransmittance = exp(
-                -opticalDepth * _DawnCloudLightAbsorptionTowardSun);
+                -directOpticalDepth *
+                _DawnCloudLightAbsorptionTowardSun);
+            directTransmittance = DawnCloudPowderTransmittance(
+                directTransmittance,
+                cosineAngle);
+            float internalOpticalDepth = solarOpticalDepth;
             float multipleTransmittance = exp(
-                -opticalDepth * _DawnCloudLightAbsorptionTowardSun *
+                -internalOpticalDepth *
+                _DawnCloudLightAbsorptionTowardSun *
                 clamp(_DawnCloudMultiScatterParameters.x, 0.05, 1.0));
 
             DawnCloudLightResult result;
@@ -655,7 +651,7 @@ Shader "Hidden/DawnTOD/VolumetricCloud"
                 multipleTransmittance,
                 lightColor);
             result.diffuseField = diffuseField;
-            result.opticalDepth = opticalDepth;
+            result.opticalDepth = solarOpticalDepth;
             return result;
         }
 
@@ -676,8 +672,7 @@ Shader "Hidden/DawnTOD/VolumetricCloud"
 
         float3 DawnCloudEnvironmentLight(
             DawnCloudProperties properties,
-            float lightOpticalDepth,
-            float3 lightDirection)
+            float lightOpticalDepth)
         {
             float upperHemisphereBlend = smoothstep(
                 0.0,
@@ -687,12 +682,29 @@ Shader "Hidden/DawnTOD/VolumetricCloud"
                 _DawnCloudAmbientEquatorColor.rgb,
                 _DawnCloudAmbientSkyColor.rgb,
                 upperHemisphereBlend);
-            float zenithOpticalDepth =
-                max(lightOpticalDepth, 0.0) *
-                max(lightDirection.y, 0.05);
-            float upwardVisibility = exp(
-                -zenithOpticalDepth *
-                max(_DawnCloudAmbientOcclusionStrength, 0.0));
+            // Sun optical depth is only a confidence signal here. Post-erosion
+            // density keeps real detail silhouettes open to the sky instead of
+            // using the same long tangent ray to black out every ambient direction.
+            float directOcclusion = 1.0 - exp(
+                -max(lightOpticalDepth, 0.0) *
+                max(_DawnCloudLightAbsorptionTowardSun, 0.0));
+            float relativeFinalDensity = saturate(
+                properties.density /
+                max(_DawnCloudDensityMultiplier, 0.0001));
+            float densityOcclusion = smoothstep(
+                0.1,
+                0.8,
+                relativeFinalDensity);
+            float lowerCloudWeight = 1.0 - properties.height;
+            float ambientOcclusion = saturate(
+                directOcclusion *
+                densityOcclusion *
+                lerp(1.0, 1.5, lowerCloudWeight));
+            float upwardVisibility = lerp(
+                1.0,
+                0.1,
+                ambientOcclusion *
+                saturate(_DawnCloudAmbientOcclusionStrength));
             float groundVisibility = 1.0 - properties.height;
             return upperHemisphere * upwardVisibility +
                    _DawnCloudAmbientGroundColor.rgb * groundVisibility;
@@ -788,7 +800,7 @@ Shader "Hidden/DawnTOD/VolumetricCloud"
             float distanceTravelled = blueNoise * _DawnCloudRayOffsetStrength;
             float viewAbsorption = max(
                 _DawnCloudLightAbsorptionThroughCloud,
-                0.0);
+                0.05);
             float visibleTransmittance = 1.0;
             float referenceTransmittance = 1.0;
             float3 visibleLightEnergy = 0.0;
@@ -816,23 +828,22 @@ Shader "Hidden/DawnTOD/VolumetricCloud"
                         rayPosition,
                         cloudProperties.localHeight,
                         lightDirection,
-                        mainLight.color);
-                    float powder = DawnCloudPowderEffect(
-                        cloudProperties.density,
+                        mainLight.color,
                         cosineAngle);
-                    // Powder may shape the directional highlight, but it must
-                    // not undo the user-configured silhouette fill.
-                    float directPhase = max(
-                        saturate(_DawnCloudPhaseMinimum),
-                        phase * powder);
+                    float directPhase = phase;
                     float3 incidentLight =
                         lightResult.direct * directPhase +
                         lightResult.multiple * multiplePhase *
                         saturate(_DawnCloudMultiScatterParameters.y);
+                    float3 minimumSolarFill =
+                        lightResult.multiple *
+                        saturate(_DawnCloudPhaseMinimum);
+                    incidentLight = max(
+                        incidentLight,
+                        minimumSolarFill);
                     incidentLight += DawnCloudEnvironmentLight(
                         cloudProperties,
-                        lightResult.opticalDepth,
-                        lightDirection);
+                        lightResult.opticalDepth);
                     float3 diffuseFieldLight =
                         DawnCloudMapDiffuseField(
                             lightResult.diffuseField) *
@@ -970,8 +981,19 @@ Shader "Hidden/DawnTOD/VolumetricCloud"
                 cloud.rgb,
                 atmosphericChroma * cloudLuminance,
                 skyMix * 0.35);
+            float rawSceneDepth = SampleSceneDepth(input.texcoord);
+#if UNITY_REVERSED_Z
+            float opaqueBackground = step(0.0001, rawSceneDepth);
+#else
+            float opaqueBackground =
+                1.0 - step(0.9999, rawSceneDepth);
+#endif
+            // The scene/sky delta corrects opaque geometry only. Applying it
+            // to sky pixels subtracts the full-resolution sun from a separate
+            // low-resolution sky render and creates a dark semitransparent rim.
             cloud.rgb +=
-                (unobstructedSky - sceneColor) * (cloud.a * skyMix);
+                (unobstructedSky - sceneColor) *
+                (cloud.a * skyMix * opaqueBackground);
             return cloud;
         }
 

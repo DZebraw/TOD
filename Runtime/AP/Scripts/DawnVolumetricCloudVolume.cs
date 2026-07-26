@@ -117,27 +117,29 @@ namespace DawnTOD
         public ColorParameter colorB =
             new ColorParameter(Color.white, true, false, true);
 
-        public ClampedFloatParameter colorOffset1 = new ClampedFloatParameter(0f, 0f, 2f);
+        public ClampedFloatParameter colorOffset1 = new ClampedFloatParameter(1f, 0f, 2f);
 
-        public ClampedFloatParameter colorOffset2 = new ClampedFloatParameter(0.55f, 0f, 2f);
+        public ClampedFloatParameter colorOffset2 = new ClampedFloatParameter(1f, 0f, 2f);
 
+        [Tooltip("Extinction of direct sunlight along the light ray. Higher values deepen self-shadowing and world cloud shadows.")]
         public ClampedFloatParameter lightAbsorptionTowardSun =
-            new ClampedFloatParameter(0.473f, 0f, 1f);
+            new ClampedFloatParameter(0.4f, 0f, 1f);
 
+        [Tooltip("View-ray extinction. A small positive lower bound avoids transparent pixels that still add scattering energy.")]
         public ClampedFloatParameter lightAbsorptionThroughCloud =
-            new ClampedFloatParameter(1.5f, 0f, 5f);
+            new ClampedFloatParameter(1.5f, 0.05f, 5f);
 
         [Tooltip("X forward anisotropy, Y backward anisotropy, Z forward blend, W phase intensity.")]
         public Vector4Parameter phaseParameters =
-            new Vector4Parameter(new Vector4(0.7f, -0.2f, 0.7f, 1f));
+            new Vector4Parameter(new Vector4(0.75f, -0.2f, 0.8f, 1f));
 
-        [Tooltip("Minimum direct-light response away from the main forward-scattering highlight. Keeps thin side and back edges readable against the sky.")]
+        [Tooltip("Minimum final sunlight response after internal-light transmission. It keeps side and back faces readable without flattening the forward phase lobe.")]
         public ClampedFloatParameter phaseMinimum =
             new ClampedFloatParameter(0.18f, 0f, 1f);
 
-        [Tooltip("Shapes low-density directional lighting to reinforce cloud depth without reducing it below Non-Sun-Facing Fill.")]
+        [Tooltip("Blends Beer transmission toward a bounded Beer-Powder response near the sun. The same forward response keeps silver edges stable when Bounds Height changes, without lifting opaque cloud cores elsewhere.")]
         public ClampedFloatParameter powderEffectIntensity =
-            new ClampedFloatParameter(0.25f, 0f, 1f);
+            new ClampedFloatParameter(0.35f, 0f, 1f);
 
         [Header("Multiple Scattering")]
         [Tooltip("Extinction retained by the internal-light approximation. Lower values let sunlight reach deeper into thick clouds.")]
@@ -150,12 +152,12 @@ namespace DawnTOD
 
         [Tooltip("Directional character retained by internal light. Zero is isotropic; one matches direct sunlight.")]
         public ClampedFloatParameter multiScatterDirectionality =
-            new ClampedFloatParameter(0.35f, 0f, 1f);
+            new ClampedFloatParameter(0.2f, 0f, 1f);
 
         [Header("Physical Diffuse Field")]
-        [Tooltip("Adds the HanPi-style phi_fwd isotropic diffuse field inside optically thick clouds. Zero disables the field.")]
+        [Tooltip("Experimental HanPi-style phi_fwd field for optically thick clouds. It is disabled by default because Internal Light and Sky Fill already provide the production baseline.")]
         public ClampedFloatParameter diffuseFieldIntensity =
-            new ClampedFloatParameter(1f, 0f, 4f);
+            new ClampedFloatParameter(0f, 0f, 4f);
 
         [Tooltip("Controls how quickly diffuse-source confidence recovers above the cloud base. Zero disables the base-depth gate.")]
         public ClampedFloatParameter diffuseFieldDepthPower =
@@ -178,9 +180,9 @@ namespace DawnTOD
             new ClampedFloatParameter(1f, 0f, 4f);
 
         [Header("Environment Lighting")]
-        [Tooltip("Uses sun-ray optical depth to attenuate sky light above dense cloud regions while preserving independent ground bounce.")]
+        [Tooltip("Density-aware occlusion of upper-hemisphere light. Thin silhouettes retain sky fill even when their tangent ray toward the sun is long.")]
         public ClampedFloatParameter ambientOcclusionStrength =
-            new ClampedFloatParameter(0.65f, 0f, 1f);
+            new ClampedFloatParameter(0.35f, 0f, 1f);
 
         [Tooltip("Tint applied to the current scene ambient color for light entering from the sky.")]
         public ColorParameter skyLightTint =

@@ -17,6 +17,8 @@ namespace DawnTODEditor
         private const float MinDensityBias = -1f;
         private const float MaxDensityBias = 1f;
 
+        private static bool s_ShowAdvancedLighting;
+
         private SerializedDataParameter m_Enabled;
         private SerializedDataParameter m_BoundsCenter;
         private SerializedDataParameter m_BoundsSize;
@@ -210,6 +212,94 @@ namespace DawnTODEditor
                     "Controls the vertical fade distance of cloud tops."));
 
             PropertyField(
+                m_LightAbsorptionTowardSun,
+                new GUIContent(
+                    "Sunlight Absorption",
+                    "Extinction along the light ray toward the sun. Higher values deepen cloud self-shadowing."));
+            PropertyField(
+                m_LightAbsorptionThroughCloud,
+                new GUIContent(
+                    "View Extinction",
+                    "Extinction accumulated along the camera ray through the cloud."));
+            DrawForwardScattering();
+            PropertyField(
+                m_PhaseMinimum,
+                new GUIContent(
+                    "Non-Sun-Facing Fill",
+                    "Minimum final sunlight response after internal-light transmission. It keeps side and back faces readable without flattening the forward lobe."));
+            PropertyField(
+                m_PowderEffectIntensity,
+                new GUIContent(
+                    "Silver Lining / Powder",
+                    "Blends forward Beer transmission toward a bounded Beer-Powder response and keeps the sun-facing edge stable when Bounds Height changes, without lifting opaque cloud cores elsewhere."));
+            PropertyField(
+                m_MultiScatterContribution,
+                new GUIContent(
+                    "Interior Light Contribution",
+                    "Controls the internal-light approximation; zero restores single scattering."));
+            PropertyField(
+                m_SkyLightIntensity,
+                new GUIContent(
+                    "Sky Fill Intensity",
+                    "Controls cool, diffuse illumination from the sky."));
+            PropertyField(
+                m_GroundLightIntensity,
+                new GUIContent(
+                    "Ground Bounce Intensity",
+                    "Controls reflected light entering the underside of the cloud."));
+
+            s_ShowAdvancedLighting = EditorGUILayout.Foldout(
+                s_ShowAdvancedLighting,
+                new GUIContent(
+                    "Advanced Lighting",
+                    "Fine controls for phase shape, tint transitions, internal transport, and the experimental diffuse field."),
+                true);
+            if (s_ShowAdvancedLighting)
+            {
+                DrawAdvancedLighting();
+            }
+
+            PropertyField(m_SpeedWarp);
+
+            serializedObject.ApplyModifiedProperties();
+        }
+
+        private void DrawForwardScattering()
+        {
+            using (var scope = new OverridablePropertyScope(
+                m_PhaseParameters,
+                       new GUIContent(
+                           "Forward Scattering",
+                           "Forward anisotropy of direct sunlight around the sun direction."),
+                       this))
+            {
+                if (!scope.displayed)
+                {
+                    return;
+                }
+
+                Vector4 phase = m_PhaseParameters.value.vector4Value;
+                EditorGUI.BeginChangeCheck();
+                phase.x = EditorGUILayout.Slider(scope.label, phase.x, 0f, 0.9f);
+                if (EditorGUI.EndChangeCheck())
+                {
+                    m_PhaseParameters.value.vector4Value = phase;
+                }
+            }
+        }
+
+        private void DrawAdvancedLighting()
+        {
+            EditorGUI.indentLevel++;
+
+            EditorGUILayout.LabelField("Phase Response", EditorStyles.miniBoldLabel);
+            DrawAdvancedPhaseParameters();
+
+            EditorGUILayout.Space();
+            EditorGUILayout.LabelField(
+                "Tinting and Transitions",
+                EditorStyles.miniBoldLabel);
+            PropertyField(
                 m_ColorA,
                 new GUIContent(
                     "Primary Scattering Tint",
@@ -229,34 +319,41 @@ namespace DawnTODEditor
                 new GUIContent(
                     "Shadow Tint Transition",
                     "Controls the optical-depth transition between the shadow and primary tints."));
-            PropertyField(m_LightAbsorptionTowardSun);
-            PropertyField(m_LightAbsorptionThroughCloud);
-            DrawPhaseParameters();
             PropertyField(
-                m_PhaseMinimum,
+                m_SkyLightTint,
                 new GUIContent(
-                    "Non-Sun-Facing Fill",
-                    "Minimum direct-light response that keeps thin side and back edges readable against the sky."));
+                    "Sky Fill Tint",
+                    "Tints the scene Trilight sky color entering from above."));
             PropertyField(
-                m_PowderEffectIntensity,
+                m_GroundLightTint,
                 new GUIContent(
-                    "Powder Effect",
-                    "Shapes thin directional lighting while respecting the Non-Sun-Facing Fill floor."));
+                    "Ground Bounce Tint",
+                    "Tints the scene Trilight ground color and represents average terrain reflectance."));
+
+            EditorGUILayout.Space();
+            EditorGUILayout.LabelField(
+                "Interior Transport",
+                EditorStyles.miniBoldLabel);
             PropertyField(
                 m_MultiScatterExtinction,
                 new GUIContent(
-                    "Internal Light Extinction",
+                    "Interior Light Extinction",
                     "Lower values let sunlight travel farther through thick clouds."));
-            PropertyField(
-                m_MultiScatterContribution,
-                new GUIContent(
-                    "Internal Light Contribution",
-                    "Adds the second scattering order; zero restores single scattering."));
             PropertyField(
                 m_MultiScatterDirectionality,
                 new GUIContent(
-                    "Internal Light Directionality",
+                    "Interior Light Directionality",
                     "Zero is diffuse in all directions; one follows the direct-light phase."));
+            PropertyField(
+                m_AmbientOcclusionStrength,
+                new GUIContent(
+                    "Ambient Occlusion",
+                    "Density-aware sky occlusion that reduces upper-hemisphere fill inside thick cloud regions while preserving thin silhouettes and independent ground bounce."));
+
+            EditorGUILayout.Space();
+            EditorGUILayout.LabelField(
+                "Physical Diffuse Field",
+                EditorStyles.miniBoldLabel);
             PropertyField(
                 m_DiffuseFieldIntensity,
                 new GUIContent(
@@ -287,54 +384,17 @@ namespace DawnTODEditor
                 new GUIContent(
                     "Diffuse Compression",
                     "Softly compresses bright diffuse values. Zero keeps the response linear."));
-            PropertyField(
-                m_AmbientOcclusionStrength,
-                new GUIContent(
-                    "Ambient Occlusion",
-                    "Uses sun-ray optical depth to attenuate upper-hemisphere light while preserving independent ground bounce."));
-            PropertyField(
-                m_SkyLightTint,
-                new GUIContent(
-                    "Sky Fill Tint",
-                    "Tints the scene Trilight sky color entering from above."));
-            PropertyField(
-                m_SkyLightIntensity,
-                new GUIContent(
-                    "Sky Fill Intensity",
-                    "Controls cool, diffuse illumination from the sky."));
-            PropertyField(
-                m_GroundLightTint,
-                new GUIContent(
-                    "Ground Bounce Tint",
-                    "Tints the scene Trilight ground color and represents average terrain reflectance."));
-            PropertyField(
-                m_GroundLightIntensity,
-                new GUIContent(
-                    "Ground Bounce Intensity",
-                    "Controls reflected light entering the underside of the cloud."));
 
-            PropertyField(m_SpeedWarp);
-
-            serializedObject.ApplyModifiedProperties();
+            EditorGUI.indentLevel--;
         }
 
-        private void DrawPhaseParameters()
+        private void DrawAdvancedPhaseParameters()
         {
-            using (var scope = new OverridablePropertyScope(
-                       m_PhaseParameters,
-                       new GUIContent(
-                           "Forward Scattering",
-                           "Concentrates direct light around the sun direction."),
-                       this))
+            using (new EditorGUI.DisabledScope(
+                       !m_PhaseParameters.overrideState.boolValue))
             {
-                if (!scope.displayed)
-                {
-                    return;
-                }
-
                 Vector4 phase = m_PhaseParameters.value.vector4Value;
                 EditorGUI.BeginChangeCheck();
-                phase.x = EditorGUILayout.Slider(scope.label, phase.x, 0f, 0.9f);
                 phase.y = EditorGUILayout.Slider(
                     new GUIContent(
                         "Backward Scattering",

@@ -23,6 +23,20 @@
 | 8 | 深度感知上采样 | 未开始 |
 | HP 对齐 | `phi_fwd` 物理漫射场 | 待画面验收 |
 
+## 2026-07-26 太阳透射与银边修订
+
+本修订覆盖下文阶段记录中的旧光照基线，但不增加新的 Volume 参数：
+
+- 方向相位保持原始 HG 响应，`Non-Sun-Facing Fill` 改为直射与内部光合并后的最终太阳响应下限，不再在相函数内部用常数压平前向散射。
+- `Silver Lining / Powder` 使用只作用于朝向太阳半球的有界 Beer-Powder 透射；透明与完全不透明极限不变，增强集中在中等光学厚度的银边。
+- 当 `Bounds Height` 超过默认 50 单位基准时，直射、内部光和环境遮挡共用同一份高度归一太阳光学厚度，不再让高云层把三条光路按彼此矛盾的尺度压黑。
+- 天空差值修正只作用于有实体深度的背景；天空像素不再用独立的低分辨率天空纹理减去全分辨率太阳，从而消除半透明边缘的负色轮廓。
+- 太阳方向光学厚度只作为天空 AO 的遮挡置信度，并与低频局部密度结合；长切线路径不再直接把薄轮廓的整个上半球环境光压黑。
+- 平行光体积光不再以 `0.25%` 云不透明度为硬开关；它使用已有的相机射线云透射率连续衰减，使太阳附近的前向散射从云洞到云芯平滑过渡，不新增 Volume 参数。
+- 主 Inspector 仅保留 8 个常用光照控制，其余兼容参数收入 `Advanced Lighting`。实验性的 `Physical Diffuse Field` 默认关闭，避免与内部光、天空补光重复堆叠。
+
+新的默认验收基线为：`Forward Scattering = 0.75`、`Non-Sun-Facing Fill = 0.18`、`Silver Lining / Powder = 0.35`、`Interior Light Directionality = 0.2`、`Ambient Occlusion = 0.35`、`Physical Diffuse Field = 0`。
+
 ## 阶段 1：太阳方向光程修正
 
 ### 目标
@@ -103,7 +117,7 @@
 
 - `Internal Light Extinction = 0.5`：第二阶保留一半消光；数值越低，光进入厚云越深。
 - `Internal Light Contribution = 0.35`：第二阶光能强度。
-- `Internal Light Directionality = 0.35`：保留少量太阳方向感，大部分趋向均匀散射。
+- `Internal Light Directionality = 0.2`：保留少量太阳方向感，大部分趋向均匀散射。
 
 ### 建议验收画面
 
@@ -251,25 +265,25 @@
 
 ### 实施
 
-- 相函数保留可配置的非朝阳方向补光下限；它只在方向相位过低时生效，避免低密度轮廓因散射不足形成深色描边。
+- 相函数只输出原始方向响应；`Non-Sun-Facing Fill` 在直射与内部光合并后提供最终太阳响应下限，避免在相函数内部压平方向性。
 - 太阳直射始终乘入 URP 主光颜色；原 `Color A / B` 重定义为可选的乘法色调，不再以白色渐变覆盖真实太阳色。
-- 密度函数同时输出最终密度、侵蚀前低频密度和归一化高度。阶段 6 最初用低频密度近似环境 AO；后续 HP 对齐已将它替换为太阳光路真实光学厚度，避免把局部密度直接复制成脏黑明暗。
-- `Powder Effect` 只作用于单次太阳直射，并受 `Non-Sun-Facing Fill` 下限保护；多次散射和环境补光保持独立。
+- 密度函数同时输出最终密度、侵蚀前低频密度和归一化高度。环境 AO 同时参考太阳光路光学厚度和低频局部密度，并保留天空可见度下限，避免太阳附近薄轮廓被压成深色描边。
+- `Silver Lining / Powder` 只作用于朝向太阳半球的单次太阳透射；多次散射和环境补光保持独立。
 - Trilight 模式下分别读取 `RenderSettings.ambientSkyColor`、`ambientEquatorColor` 和 `ambientGroundColor`；云底、中部和云顶按高度连续混合。
 - Weather、Mask 和 Blue Noise 均按线性数据导入；Blue Noise 关闭 mipmap 并使用 Point 过滤。
 
 ### 默认验收参数
 
-- `Non-Sun-Facing Fill = 0.18`：侧光和背光方向的直射相位不会低于 `0.18`，前向高光仍保留完整方向性。
-- `Powder Effect = 0.25`：只调整非迎光薄层对比，不会把直射补光压到 `Non-Sun-Facing Fill` 以下。
-- `Ambient Occlusion = 0.65`：按太阳光路光学厚度衰减上半球环境光；下半球地面反弹仍按几何高度独立保留。
+- `Non-Sun-Facing Fill = 0.18`：在内部光透射之后托起最终太阳响应，不改变前向高光形状。
+- `Silver Lining / Powder = 0.35`：增强朝向太阳、中等光学厚度的透射，不抬亮完全不透明的云芯。
+- `Ambient Occlusion = 0.35`：遮挡集中在有实际低频密度的厚云区域，薄轮廓保留天空补光。
 
 ### 建议验收画面
 
 1. 固定云形并旋转太阳：侧光和背光区域应出现连续明暗变化，不再大面积停留在同一灰度。
 2. 日出、正午和日落分别观察：云的直射亮部应跟随太阳光色，阴影则更多继承 Trilight 天空与地面颜色。
-3. 将 `Ambient Occlusion` 在 `0 / 0.65 / 1` 间切换：变化应集中在厚云内部，轮廓和细节纹理不应变成脏黑噪点。
-4. 将 `Powder Effect` 设为 `0` 做 A/B：开启后应增强薄层与厚度差异，但不能形成整圈统一白边。
+3. 将 `Ambient Occlusion` 在 `0 / 0.35 / 1` 间切换：变化应集中在厚云内部，轮廓和细节纹理不应变成脏黑噪点。
+4. 将 `Silver Lining / Powder` 设为 `0` 做 A/B：开启后应增强太阳附近的中等厚度边缘，但不能形成整圈统一白边。
 5. 检查 Weather、Mask 与 Blue Noise 的重新导入结果，确认 Coverage 分布和抖动稳定，且没有因 sRGB 解码导致的阈值偏移。
 
 ## 后续候选效果
@@ -316,7 +330,7 @@
 
 ### 默认参数
 
-- `Physical Diffuse Field = 1.0`
+- `Physical Diffuse Field = 0`（实验项，默认关闭）
 - `Diffuse Base Recovery = 1.0`
 - `Diffuse Base Bias = 0.08`
 - `Diffuse Boundary Lighting = 0.65`

@@ -246,17 +246,18 @@ Shader "Hidden/DawnTOD/DirectionalVolumetricLight"
                     return source;
                 }
 
+                float viewCloudTransmittance = 1.0;
                 if (_DawnDirectionalLightCloudCoverageAvailable > 0.5)
                 {
-                    float cloudTransmittance = SAMPLE_TEXTURE2D_X_LOD(
+                    viewCloudTransmittance = SAMPLE_TEXTURE2D_X_LOD(
                         _DawnCloudTexture,
                         sampler_LinearClamp,
                         uv,
                         0).a;
-                    // This pass reconstructs an opaque receiver from scene
-                    // depth. Applying it after cloud composition would classify
-                    // one cloud differently over terrain and sky.
-                    if (1.0 - cloudTransmittance > 0.0025)
+                    // Match the cloud marcher's 1% transmittance cutoff. The
+                    // discarded volumetric-light contribution is bounded to
+                    // 1%, while opaque cloud cores still avoid the full march.
+                    if (viewCloudTransmittance <= 0.01)
                     {
                         return source;
                     }
@@ -352,7 +353,14 @@ Shader "Hidden/DawnTOD/DirectionalVolumetricLight"
                     _DawnDirectionalLightScatteringParameters.x *
                     mainLight.distanceAttenuation * mainLight.color *
                     _DawnDirectionalLightScatteringTint.rgb;
-                source.rgb += scattering + cloudShaftScattering;
+                // This pass runs after cloud composition. A binary cloud
+                // rejection turns smooth cloud alpha into an on/off loss of
+                // forward scattering and creates a dark contour near the sun.
+                // Transmit the medium contribution continuously instead:
+                // clear gaps retain it and opaque cloud cores block it.
+                source.rgb +=
+                    (scattering + cloudShaftScattering) *
+                    saturate(viewCloudTransmittance);
                 return source;
             }
             ENDHLSL
