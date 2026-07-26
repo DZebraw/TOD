@@ -52,9 +52,17 @@ namespace DawnTODEditor
         private SerializedDataParameter m_LightAbsorptionThroughCloud;
         private SerializedDataParameter m_PhaseParameters;
         private SerializedDataParameter m_PhaseMinimum;
+        private SerializedDataParameter m_PowderEffectIntensity;
         private SerializedDataParameter m_MultiScatterExtinction;
         private SerializedDataParameter m_MultiScatterContribution;
         private SerializedDataParameter m_MultiScatterDirectionality;
+        private SerializedDataParameter m_DiffuseFieldIntensity;
+        private SerializedDataParameter m_DiffuseFieldDepthPower;
+        private SerializedDataParameter m_DiffuseFieldDepthBias;
+        private SerializedDataParameter m_DiffuseFieldBoundaryInfluence;
+        private SerializedDataParameter m_DiffuseFieldBuildRate;
+        private SerializedDataParameter m_DiffuseFieldCompression;
+        private SerializedDataParameter m_AmbientOcclusionStrength;
         private SerializedDataParameter m_SkyLightTint;
         private SerializedDataParameter m_SkyLightIntensity;
         private SerializedDataParameter m_GroundLightTint;
@@ -102,12 +110,28 @@ namespace DawnTODEditor
                 Unpack(o.Find(x => x.lightAbsorptionThroughCloud));
             m_PhaseParameters = Unpack(o.Find(x => x.phaseParameters));
             m_PhaseMinimum = Unpack(o.Find(x => x.phaseMinimum));
+            m_PowderEffectIntensity =
+                Unpack(o.Find(x => x.powderEffectIntensity));
             m_MultiScatterExtinction =
                 Unpack(o.Find(x => x.multiScatterExtinction));
             m_MultiScatterContribution =
                 Unpack(o.Find(x => x.multiScatterContribution));
             m_MultiScatterDirectionality =
                 Unpack(o.Find(x => x.multiScatterDirectionality));
+            m_DiffuseFieldIntensity =
+                Unpack(o.Find(x => x.diffuseFieldIntensity));
+            m_DiffuseFieldDepthPower =
+                Unpack(o.Find(x => x.diffuseFieldDepthPower));
+            m_DiffuseFieldDepthBias =
+                Unpack(o.Find(x => x.diffuseFieldDepthBias));
+            m_DiffuseFieldBoundaryInfluence =
+                Unpack(o.Find(x => x.diffuseFieldBoundaryInfluence));
+            m_DiffuseFieldBuildRate =
+                Unpack(o.Find(x => x.diffuseFieldBuildRate));
+            m_DiffuseFieldCompression =
+                Unpack(o.Find(x => x.diffuseFieldCompression));
+            m_AmbientOcclusionStrength =
+                Unpack(o.Find(x => x.ambientOcclusionStrength));
             m_SkyLightTint = Unpack(o.Find(x => x.skyLightTint));
             m_SkyLightIntensity = Unpack(o.Find(x => x.skyLightIntensity));
             m_GroundLightTint = Unpack(o.Find(x => x.groundLightTint));
@@ -185,10 +209,26 @@ namespace DawnTODEditor
                     "Cloud Top Softness",
                     "Controls the vertical fade distance of cloud tops."));
 
-            PropertyField(m_ColorA);
-            PropertyField(m_ColorB);
-            PropertyField(m_ColorOffset1);
-            PropertyField(m_ColorOffset2);
+            PropertyField(
+                m_ColorA,
+                new GUIContent(
+                    "Primary Scattering Tint",
+                    "Artistic tint multiplied with the physical main-light color."));
+            PropertyField(
+                m_ColorB,
+                new GUIContent(
+                    "Deep Shadow Tint",
+                    "Artistic tint used in highly attenuated regions; it no longer replaces the main-light color."));
+            PropertyField(
+                m_ColorOffset1,
+                new GUIContent(
+                    "Primary Tint Transition",
+                    "Controls how quickly transmitted light releases the primary tint toward neutral."));
+            PropertyField(
+                m_ColorOffset2,
+                new GUIContent(
+                    "Shadow Tint Transition",
+                    "Controls the optical-depth transition between the shadow and primary tints."));
             PropertyField(m_LightAbsorptionTowardSun);
             PropertyField(m_LightAbsorptionThroughCloud);
             DrawPhaseParameters();
@@ -196,7 +236,12 @@ namespace DawnTODEditor
                 m_PhaseMinimum,
                 new GUIContent(
                     "Non-Sun-Facing Fill",
-                    "Minimum direct-light response used to keep side and back faces readable."));
+                    "Minimum direct-light response that keeps thin side and back edges readable against the sky."));
+            PropertyField(
+                m_PowderEffectIntensity,
+                new GUIContent(
+                    "Powder Effect",
+                    "Shapes thin directional lighting while respecting the Non-Sun-Facing Fill floor."));
             PropertyField(
                 m_MultiScatterExtinction,
                 new GUIContent(
@@ -213,10 +258,45 @@ namespace DawnTODEditor
                     "Internal Light Directionality",
                     "Zero is diffuse in all directions; one follows the direct-light phase."));
             PropertyField(
+                m_DiffuseFieldIntensity,
+                new GUIContent(
+                    "Physical Diffuse Field",
+                    "Adds the HanPi-style phi_fwd isotropic field inside optically thick clouds. Zero disables only this additive field; aligned cone shadows and ambient AO remain active."));
+            PropertyField(
+                m_DiffuseFieldDepthPower,
+                new GUIContent(
+                    "Diffuse Base Recovery",
+                    "Controls how quickly diffuse-source confidence recovers above the cloud base. Zero disables the base-depth gate."));
+            PropertyField(
+                m_DiffuseFieldDepthBias,
+                new GUIContent(
+                    "Diffuse Base Bias",
+                    "Positive values retain more physical diffuse light at the underside."));
+            PropertyField(
+                m_DiffuseFieldBoundaryInfluence,
+                new GUIContent(
+                    "Diffuse Boundary Lighting",
+                    "Uses the weather-driven cloud-top normal to reject energy on back-lit escape boundaries."));
+            PropertyField(
+                m_DiffuseFieldBuildRate,
+                new GUIContent(
+                    "Diffuse Build Rate",
+                    "Controls the optical depth required before directional scattering becomes isotropic."));
+            PropertyField(
+                m_DiffuseFieldCompression,
+                new GUIContent(
+                    "Diffuse Compression",
+                    "Softly compresses bright diffuse values. Zero keeps the response linear."));
+            PropertyField(
+                m_AmbientOcclusionStrength,
+                new GUIContent(
+                    "Ambient Occlusion",
+                    "Uses sun-ray optical depth to attenuate upper-hemisphere light while preserving independent ground bounce."));
+            PropertyField(
                 m_SkyLightTint,
                 new GUIContent(
                     "Sky Fill Tint",
-                    "Tints the current scene ambient color entering from above."));
+                    "Tints the scene Trilight sky color entering from above."));
             PropertyField(
                 m_SkyLightIntensity,
                 new GUIContent(
@@ -226,7 +306,7 @@ namespace DawnTODEditor
                 m_GroundLightTint,
                 new GUIContent(
                     "Ground Bounce Tint",
-                    "Represents the average color reflected by the terrain."));
+                    "Tints the scene Trilight ground color and represents average terrain reflectance."));
             PropertyField(
                 m_GroundLightIntensity,
                 new GUIContent(

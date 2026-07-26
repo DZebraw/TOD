@@ -131,9 +131,13 @@ namespace DawnTOD
         public Vector4Parameter phaseParameters =
             new Vector4Parameter(new Vector4(0.7f, -0.2f, 0.7f, 1f));
 
-        [Tooltip("Minimum directional-light response away from the main forward-scattering highlight.")]
+        [Tooltip("Minimum direct-light response away from the main forward-scattering highlight. Keeps thin side and back edges readable against the sky.")]
         public ClampedFloatParameter phaseMinimum =
             new ClampedFloatParameter(0.18f, 0f, 1f);
+
+        [Tooltip("Shapes low-density directional lighting to reinforce cloud depth without reducing it below Non-Sun-Facing Fill.")]
+        public ClampedFloatParameter powderEffectIntensity =
+            new ClampedFloatParameter(0.25f, 0f, 1f);
 
         [Header("Multiple Scattering")]
         [Tooltip("Extinction retained by the internal-light approximation. Lower values let sunlight reach deeper into thick clouds.")]
@@ -148,7 +152,36 @@ namespace DawnTOD
         public ClampedFloatParameter multiScatterDirectionality =
             new ClampedFloatParameter(0.35f, 0f, 1f);
 
+        [Header("Physical Diffuse Field")]
+        [Tooltip("Adds the HanPi-style phi_fwd isotropic diffuse field inside optically thick clouds. Zero disables the field.")]
+        public ClampedFloatParameter diffuseFieldIntensity =
+            new ClampedFloatParameter(1f, 0f, 4f);
+
+        [Tooltip("Controls how quickly diffuse-source confidence recovers above the cloud base. Zero disables the base-depth gate.")]
+        public ClampedFloatParameter diffuseFieldDepthPower =
+            new ClampedFloatParameter(1f, 0f, 4f);
+
+        [Tooltip("Offsets the normalized cloud-base depth gate. Positive values retain more diffuse light at the underside.")]
+        public ClampedFloatParameter diffuseFieldDepthBias =
+            new ClampedFloatParameter(0.08f, -0.3f, 0.5f);
+
+        [Tooltip("Uses the weather-driven cloud-top normal to suppress diffuse injection on back-lit escape boundaries.")]
+        public ClampedFloatParameter diffuseFieldBoundaryInfluence =
+            new ClampedFloatParameter(0.65f, 0f, 1f);
+
+        [Tooltip("Optical-depth rate at which directional scattering becomes an isotropic diffuse source.")]
+        public ClampedFloatParameter diffuseFieldBuildRate =
+            new ClampedFloatParameter(1f, 0f, 4f);
+
+        [Tooltip("Softly compresses high diffuse-field values. Zero keeps the response linear.")]
+        public ClampedFloatParameter diffuseFieldCompression =
+            new ClampedFloatParameter(1f, 0f, 4f);
+
         [Header("Environment Lighting")]
+        [Tooltip("Uses sun-ray optical depth to attenuate sky light above dense cloud regions while preserving independent ground bounce.")]
+        public ClampedFloatParameter ambientOcclusionStrength =
+            new ClampedFloatParameter(0.65f, 0f, 1f);
+
         [Tooltip("Tint applied to the current scene ambient color for light entering from the sky.")]
         public ColorParameter skyLightTint =
             new ColorParameter(new Color(0.8f, 0.9f, 1f, 1f), true, false, true);

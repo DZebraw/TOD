@@ -86,6 +86,13 @@ namespace DawnTOD
 
         private readonly struct CloudSettings
         {
+            private static readonly Vector3[] DownwardProbeDirection =
+            {
+                Vector3.down
+            };
+
+            private static readonly Color[] DownwardProbeResult = new Color[1];
+
             public readonly Vector3 BoundsMinimum;
             public readonly Vector3 BoundsMaximum;
             public readonly Texture3D ShapeNoise;
@@ -118,8 +125,13 @@ namespace DawnTOD
             public readonly float LightAbsorptionThroughCloud;
             public readonly Vector4 PhaseParameters;
             public readonly float PhaseMinimum;
+            public readonly float PowderEffectIntensity;
             public readonly Vector4 MultiScatterParameters;
+            public readonly Vector4 DiffuseFieldParameters;
+            public readonly Vector4 DiffuseFieldTransportParameters;
+            public readonly float AmbientOcclusionStrength;
             public readonly Color AmbientSkyColor;
+            public readonly Color AmbientEquatorColor;
             public readonly Color AmbientGroundColor;
             public readonly Vector4 SpeedWarp;
 
@@ -160,8 +172,13 @@ namespace DawnTOD
                 float lightAbsorptionThroughCloud,
                 Vector4 phaseParameters,
                 float phaseMinimum,
+                float powderEffectIntensity,
                 Vector4 multiScatterParameters,
+                Vector4 diffuseFieldParameters,
+                Vector4 diffuseFieldTransportParameters,
+                float ambientOcclusionStrength,
                 Color ambientSkyColor,
+                Color ambientEquatorColor,
                 Color ambientGroundColor,
                 Vector4 speedWarp)
             {
@@ -198,9 +215,18 @@ namespace DawnTOD
                 LightAbsorptionThroughCloud = lightAbsorptionThroughCloud;
                 PhaseParameters = SanitizePhaseParameters(phaseParameters);
                 PhaseMinimum = Mathf.Clamp01(phaseMinimum);
+                PowderEffectIntensity = Mathf.Clamp01(powderEffectIntensity);
                 MultiScatterParameters = SanitizeMultiScatterParameters(
                     multiScatterParameters);
+                DiffuseFieldParameters = SanitizeDiffuseFieldParameters(
+                    diffuseFieldParameters);
+                DiffuseFieldTransportParameters =
+                    SanitizeDiffuseFieldTransportParameters(
+                        diffuseFieldTransportParameters);
+                AmbientOcclusionStrength = Mathf.Clamp01(
+                    ambientOcclusionStrength);
                 AmbientSkyColor = ambientSkyColor;
+                AmbientEquatorColor = ambientEquatorColor;
                 AmbientGroundColor = ambientGroundColor;
                 SpeedWarp = speedWarp;
             }
@@ -223,6 +249,25 @@ namespace DawnTOD
                 return parameters;
             }
 
+            private static Vector4 SanitizeDiffuseFieldParameters(Vector4 parameters)
+            {
+                parameters.x = Mathf.Clamp(parameters.x, 0f, 4f);
+                parameters.y = Mathf.Clamp(parameters.y, 0f, 4f);
+                parameters.z = Mathf.Clamp(parameters.z, -0.3f, 0.5f);
+                parameters.w = Mathf.Clamp01(parameters.w);
+                return parameters;
+            }
+
+            private static Vector4 SanitizeDiffuseFieldTransportParameters(
+                Vector4 parameters)
+            {
+                parameters.x = Mathf.Clamp(parameters.x, 0f, 4f);
+                parameters.y = Mathf.Clamp(parameters.y, 0f, 4f);
+                parameters.z = 0f;
+                parameters.w = 0f;
+                return parameters;
+            }
+
             private static Vector4 SanitizeHeightProfileParameters(Vector4 parameters)
             {
                 parameters.x = Mathf.Clamp(parameters.x, 0.01f, 0.3f);
@@ -240,13 +285,34 @@ namespace DawnTOD
                 size.z = Mathf.Max(size.z, 0.01f);
                 Vector3 halfSize = size * 0.5f;
                 Vector3 center = cloud.boundsCenter.value;
-                Color sceneAmbient = RenderSettings.ambientLight;
+                Color sceneAmbientSky = RenderSettings.ambientLight;
+                Color sceneAmbientEquator = RenderSettings.ambientLight;
+                // The raw Trilight ground swatch can be black even when the
+                // convolved probe still contains lower-hemisphere irradiance.
+                // Clouds need that directional irradiance as diffuse bounce.
+                Color sceneAmbientGround = EvaluateDownwardAmbientProbe();
+                if (RenderSettings.ambientMode == AmbientMode.Trilight)
+                {
+                    sceneAmbientSky = RenderSettings.ambientSkyColor;
+                    sceneAmbientEquator = RenderSettings.ambientEquatorColor;
+                }
+
                 Color ambientSkyColor = MultiplyRgb(
-                    sceneAmbient,
+                    sceneAmbientSky,
                     cloud.skyLightTint.value,
                     cloud.skyLightIntensity.value);
+                Color ambientEquatorColor = MultiplyRgb(
+                    sceneAmbientEquator,
+                    Color.Lerp(
+                        cloud.groundLightTint.value,
+                        cloud.skyLightTint.value,
+                        0.5f),
+                    Mathf.Lerp(
+                        cloud.groundLightIntensity.value,
+                        cloud.skyLightIntensity.value,
+                        0.5f));
                 Color ambientGroundColor = MultiplyRgb(
-                    sceneAmbient,
+                    sceneAmbientGround,
                     cloud.groundLightTint.value,
                     cloud.groundLightIntensity.value);
                 return new CloudSettings(
@@ -286,14 +352,40 @@ namespace DawnTOD
                     cloud.lightAbsorptionThroughCloud.value,
                     cloud.phaseParameters.value,
                     cloud.phaseMinimum.value,
+                    cloud.powderEffectIntensity.value,
                     new Vector4(
                         cloud.multiScatterExtinction.value,
                         cloud.multiScatterContribution.value,
                         cloud.multiScatterDirectionality.value,
                         0f),
+                    new Vector4(
+                        cloud.diffuseFieldIntensity.value,
+                        cloud.diffuseFieldDepthPower.value,
+                        cloud.diffuseFieldDepthBias.value,
+                        cloud.diffuseFieldBoundaryInfluence.value),
+                    new Vector4(
+                        cloud.diffuseFieldBuildRate.value,
+                        cloud.diffuseFieldCompression.value,
+                        0f,
+                        0f),
+                    cloud.ambientOcclusionStrength.value,
                     ambientSkyColor,
+                    ambientEquatorColor,
                     ambientGroundColor,
                     cloud.speedWarp.value);
+            }
+
+            private static Color EvaluateDownwardAmbientProbe()
+            {
+                RenderSettings.ambientProbe.Evaluate(
+                    DownwardProbeDirection,
+                    DownwardProbeResult);
+                Color color = DownwardProbeResult[0];
+                return new Color(
+                    Mathf.Max(0f, color.r),
+                    Mathf.Max(0f, color.g),
+                    Mathf.Max(0f, color.b),
+                    1f);
             }
 
             private static Color MultiplyRgb(Color source, Color tint, float intensity)
@@ -361,10 +453,21 @@ namespace DawnTOD
                 Shader.PropertyToID("_DawnCloudPhaseParameters");
             private static readonly int PhaseMinimumId =
                 Shader.PropertyToID("_DawnCloudPhaseMinimum");
+            private static readonly int PowderEffectIntensityId =
+                Shader.PropertyToID("_DawnCloudPowderEffectIntensity");
             private static readonly int MultiScatterParametersId =
                 Shader.PropertyToID("_DawnCloudMultiScatterParameters");
+            private static readonly int DiffuseFieldParametersId =
+                Shader.PropertyToID("_DawnCloudDiffuseFieldParameters");
+            private static readonly int DiffuseFieldTransportParametersId =
+                Shader.PropertyToID(
+                    "_DawnCloudDiffuseFieldTransportParameters");
+            private static readonly int AmbientOcclusionStrengthId =
+                Shader.PropertyToID("_DawnCloudAmbientOcclusionStrength");
             private static readonly int AmbientSkyColorId =
                 Shader.PropertyToID("_DawnCloudAmbientSkyColor");
+            private static readonly int AmbientEquatorColorId =
+                Shader.PropertyToID("_DawnCloudAmbientEquatorColor");
             private static readonly int AmbientGroundColorId =
                 Shader.PropertyToID("_DawnCloudAmbientGroundColor");
             private static readonly int SpeedWarpId =
@@ -769,10 +872,25 @@ namespace DawnTOD
                 properties.SetColor(ColorBId, settings.ColorB);
                 properties.SetVector(PhaseParametersId, settings.PhaseParameters);
                 properties.SetFloat(PhaseMinimumId, settings.PhaseMinimum);
+                properties.SetFloat(
+                    PowderEffectIntensityId,
+                    settings.PowderEffectIntensity);
                 properties.SetVector(
                     MultiScatterParametersId,
                     settings.MultiScatterParameters);
+                properties.SetVector(
+                    DiffuseFieldParametersId,
+                    settings.DiffuseFieldParameters);
+                properties.SetVector(
+                    DiffuseFieldTransportParametersId,
+                    settings.DiffuseFieldTransportParameters);
+                properties.SetFloat(
+                    AmbientOcclusionStrengthId,
+                    settings.AmbientOcclusionStrength);
                 properties.SetColor(AmbientSkyColorId, settings.AmbientSkyColor);
+                properties.SetColor(
+                    AmbientEquatorColorId,
+                    settings.AmbientEquatorColor);
                 properties.SetColor(
                     AmbientGroundColorId,
                     settings.AmbientGroundColor);
