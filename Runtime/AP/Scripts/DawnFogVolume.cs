@@ -1,4 +1,5 @@
 using System;
+#if DAWNTOD_URP_AVAILABLE
 using UnityEngine;
 using UnityEngine.Rendering;
 
@@ -40,3 +41,4 @@ namespace DawnTOD
         }
     }
 }
+#endif

@@ -3,15 +3,9 @@ using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.Serialization;
-#if USING_HDRP
-using UnityEngine.Rendering.HighDefinition;
-#endif
 
 namespace DawnTOD
 {
-#if USING_URP
-    [RequireComponent(typeof(RuntimeSkySetting))]
-#endif
     [ExecuteAlways]
     public class DawnTODSystem : MonoBehaviour
     {
@@ -51,6 +45,7 @@ namespace DawnTOD
         private bool hasMixedResult;
 #if UNITY_EDITOR
         [NonSerialized] private DawnWeatherController debugWeatherPreviewController;
+        [NonSerialized] private bool editorWeatherRefreshScheduled;
         private const int DebugWeatherPreviewSourceIndex = -2;
 #endif
         private double nextFallbackWarningTime;
@@ -93,34 +88,19 @@ namespace DawnTOD
         [Tooltip("Scene rain output controlled by the blended precipitation result.")]
         [SerializeField] private DawnGPUParticleSystem rainParticleSystem;
 
-        // ========== HDRP Volume ==========
-#if USING_HDRP
+        // Retained on the owner for source and scene compatibility. The HDRP
+        // output strategy consumes it without making the core reference HDRP.
         [Tooltip("HDRP Volume")]
         [SerializeField]
         public Volume hdrpVolume;
-#endif
 
         // ========== 私有状态 ==========
         private TimeManager timeManager;
-
-#if USING_HDRP
-        private PhysicallyBasedSky physicalSky;
-        private Fog fog;
-        private Exposure exposure;
-        private IndirectLightingController indirectLighting;
-#elif USING_URP
-        private RuntimeSkySetting runtimeSkySetting;
-        [NonSerialized] private GameObject runtimeFogVolumeObject;
-        [NonSerialized] private Volume runtimeFogVolume;
-        [NonSerialized] private VolumeProfile runtimeFogProfile;
-        [NonSerialized] private DawnFogVolume runtimeFogSettings;
-
-        // TOD owns the DawnFogVolume values at runtime. Keep this above authored
-        // scene volumes so the preset tracks are the active source of fog data.
-        private const float RuntimeFogVolumePriority = 10000f;
-        private const float DefaultFogHeightRange = 100f;
-        private const float DefaultMaximumFogDistance = 5000f;
-#endif
+        [NonSerialized] private IWeatherPipelineOutput pipelineOutput;
+        [NonSerialized] private WeatherRenderPipelineKind pipelineOutputKind =
+            WeatherRenderPipelineKind.Unknown;
+        [NonSerialized] private bool pipelineOutputNeedsApply;
+        [NonSerialized] private bool weatherRefreshPending = true;
 
         private bool isNight = false;
         [NonSerialized] private DawnGPUParticleSystem resolvedLegacyRainParticleSystem;
@@ -130,6 +110,9 @@ namespace DawnTOD
         public float SunSetTime => sunsetTime;
         public float NormalizedTime => GetNormalizedTime();
         public bool IsNight => isNight;
+        public WeatherPipelineCapabilities PipelineCapabilities =>
+            ResolvePipelineOutput()?.Capabilities ??
+            WeatherPipelineCapabilities.Current;
         public DawnGPUParticleSystem RainParticleSystem
         {
             get => rainParticleSystem;
@@ -180,6 +163,24 @@ namespace DawnTOD
         {
             get => timeOfDay;
             set => SetTime(value);
+        }
+
+        public bool TryGetPipelineConfigurationError(
+            out string errorMessage)
+        {
+            IWeatherPipelineOutput output = ResolvePipelineOutput();
+            if (output == null)
+            {
+                WeatherRenderPipelineKind pipelineKind =
+                    WeatherPipelineCapabilities.Current.PipelineKind;
+                errorMessage = pipelineKind ==
+                    WeatherRenderPipelineKind.Unknown
+                    ? "No supported Scriptable Render Pipeline is active."
+                    : $"No {pipelineKind} weather output is registered.";
+                return true;
+            }
+
+            return !output.IsConfigured(out errorMessage);
         }
 
 #if UNITY_EDITOR
@@ -278,29 +279,29 @@ namespace DawnTOD
 
         private void Start()
         {
-#if USING_HDRP
-            CacheVolumeComponents();
-#elif USING_URP
-            EnsureRuntimeFogVolume();
-#endif
+            PreparePipelineOutput();
 
             // 调度列表是唯一序列化来源；场景扫描只由显式 Rescan 触发。
             RebuildControllerCacheFromSchedule();
             UpdateWeatherBlendingSystem();
         }
 
+        private void OnEnable()
+        {
+            weatherRefreshPending = true;
+        }
+
         private void Update()
         {
-#if USING_URP
-            if (runtimeFogVolume == null)
+            if (weatherRefreshPending)
             {
-                EnsureRuntimeFogVolume();
-                if (hasMixedResult)
-                {
-                    UpdateRuntimeFogVolume(mixedResult);
-                }
+                UpdateWeatherBlendingSystem();
             }
-#endif
+            else
+            {
+                PreparePipelineOutput();
+            }
+
             if (Application.isPlaying && autoAdvanceTime)
             {
                 AdvanceTime(Time.deltaTime);
@@ -309,9 +310,6 @@ namespace DawnTOD
 
         private void OnValidate()
         {
-#if USING_HDRP
-            CacheVolumeComponents();
-#endif
             resolvedLegacyRainParticleSystem = rainParticleSystem;
             rainOutputResolutionAttempted = rainParticleSystem != null;
             nextRainOutputWarningTime = 0d;
@@ -321,29 +319,28 @@ namespace DawnTOD
             }
             SyncTimeManagerSettings();
             RebuildControllerCacheFromSchedule();
-            UpdateWeatherBlendingSystem();
-
-            if (Application.isPlaying && autoAdvanceTime)
-            {
-                AdvanceTime(Time.deltaTime);
-            }
+            weatherRefreshPending = true;
+#if UNITY_EDITOR
+            ScheduleEditorWeatherRefresh();
+#endif
         }
 
         private void OnDisable()
         {
+            weatherRefreshPending = true;
 #if UNITY_EDITOR
+            CancelEditorWeatherRefresh();
             debugWeatherPreviewController = null;
 #endif
-#if USING_URP
-            ReleaseRuntimeFogVolume();
-#endif
+            ReleasePipelineOutput();
         }
 
         private void OnDestroy()
         {
-#if USING_URP
-            ReleaseRuntimeFogVolume();
+#if UNITY_EDITOR
+            CancelEditorWeatherRefresh();
 #endif
+            ReleasePipelineOutput();
             UnsubscribeTimeManager();
             if (_instance == this)
             {
@@ -851,62 +848,30 @@ namespace DawnTOD
                 moonLight.intensity = mixedResult.MoonIntensity;
                 moonLight.color = mixedResult.MoonColor;
             }
-#if USING_URP
-            RuntimeSkySetting skySetting = ResolveRuntimeSkySetting();
-            if (skySetting != null)
+
+            ResolvePipelineFogToggles(
+                mixedResult.DominantSourceIndex,
+                out bool fogEnabled,
+                out bool fogAffectSky);
+            IWeatherPipelineOutput output = ResolvePipelineOutput();
+            if (output != null)
             {
-                skySetting.SetSpaceEmissionMultiplier(mixedResult.StarEmission);
-            }
-            UpdateRuntimeFogVolume(mixedResult);
-#endif
-#if USING_HDRP
-            // ========== 应用天空属性 ==========
-            if (physicalSky != null)
-            {
-                physicalSky.spaceEmissionMultiplier.overrideState = true;
-                physicalSky.spaceEmissionMultiplier.value = mixedResult.StarEmission;
-            }
-
-            // ========== 应用雾属性 ==========
-            if (fog != null)
-            {
-                fog.meanFreePath.overrideState = true;
-                fog.meanFreePath.value = mixedResult.FogDistance;
-
-                fog.baseHeight.overrideState = true;
-                fog.baseHeight.value = mixedResult.FogHeight;
-
-                fog.enableVolumetricFog.overrideState = true;
-                fog.enableVolumetricFog.value = true;
-
-                fog.albedo.overrideState = true;
-                fog.albedo.value = mixedResult.FogColor;
+                output.Prepare();
+                pipelineOutputNeedsApply = false;
+                output.Apply(
+                    new WeatherPipelineOutputState(
+                        mixedResult.StarEmission,
+                        mixedResult.FogDistance,
+                        mixedResult.FogHeight,
+                        mixedResult.FogColor,
+                        mixedResult.ExposureCompensation,
+                        fogEnabled,
+                        fogAffectSky));
             }
 
-            // ========== 应用曝光属性 ==========
-            if (exposure != null)
-            {
-                exposure.mode.overrideState = true;
-                exposure.mode.value = ExposureMode.Automatic;
-                exposure.compensation.overrideState = true;
-                exposure.compensation.value = mixedResult.ExposureCompensation;
-            }
-#endif
             // ========== 应用雨水混合结果 ==========
             ApplyRainMixedResult();
         }
-
-#if USING_URP
-        private RuntimeSkySetting ResolveRuntimeSkySetting()
-        {
-            if (runtimeSkySetting == null)
-            {
-                runtimeSkySetting = GetComponent<RuntimeSkySetting>();
-            }
-
-            return runtimeSkySetting;
-        }
-#endif
 
         /// <summary>
         /// 刷新天气混合系统（供编辑器面板调用，实时同步修改）
@@ -916,11 +881,55 @@ namespace DawnTOD
             UpdateWeatherBlendingSystem();
         }
 
+#if UNITY_EDITOR
+        internal void ScheduleEditorWeatherRefresh()
+        {
+            if (editorWeatherRefreshScheduled)
+            {
+                return;
+            }
+
+            editorWeatherRefreshScheduled = true;
+            UnityEditor.EditorApplication.delayCall +=
+                RefreshWeatherAfterEditorValidation;
+        }
+
+        private void RefreshWeatherAfterEditorValidation()
+        {
+            editorWeatherRefreshScheduled = false;
+            if (this == null || !isActiveAndEnabled)
+            {
+                return;
+            }
+
+            RefreshWeatherBlendingSystem();
+        }
+
+        private void CancelEditorWeatherRefresh()
+        {
+            if (!editorWeatherRefreshScheduled)
+            {
+                return;
+            }
+
+            UnityEditor.EditorApplication.delayCall -=
+                RefreshWeatherAfterEditorValidation;
+            editorWeatherRefreshScheduled = false;
+        }
+#endif
+
         /// <summary>
         /// 更新天气混合系统
         /// </summary>
         private void UpdateWeatherBlendingSystem()
         {
+            if (!isActiveAndEnabled)
+            {
+                weatherRefreshPending = true;
+                return;
+            }
+
+            weatherRefreshPending = false;
             CheckDayNightTransition();
 
             if (TryEvaluateWeather(out WeatherBlendResult evaluatedResult))
@@ -1076,82 +1085,7 @@ namespace DawnTOD
                 this);
         }
 
-#if USING_HDRP
-        private void CacheVolumeComponents()
-        {
-            if (hdrpVolume == null || hdrpVolume.profile == null)
-            {
-                physicalSky = null;
-                fog = null;
-                exposure = null;
-                indirectLighting = null;
-                return;
-            }
-
-            hdrpVolume.profile.TryGet(out physicalSky);
-            hdrpVolume.profile.TryGet(out fog);
-            hdrpVolume.profile.TryGet(out exposure);
-            hdrpVolume.profile.TryGet(out indirectLighting);
-        }
-#endif
-
-#if USING_URP
-        private void EnsureRuntimeFogVolume()
-        {
-            if (runtimeFogVolume != null && runtimeFogSettings != null)
-            {
-                return;
-            }
-
-            ReleaseRuntimeFogVolume();
-
-            runtimeFogVolumeObject = new GameObject("Dawn TOD Runtime Fog Volume")
-            {
-                hideFlags = HideFlags.HideAndDontSave,
-                layer = gameObject.layer
-            };
-            runtimeFogVolumeObject.transform.SetParent(transform, false);
-
-            runtimeFogProfile = ScriptableObject.CreateInstance<VolumeProfile>();
-            runtimeFogProfile.name = "Dawn TOD Runtime Fog Profile";
-            runtimeFogProfile.hideFlags = HideFlags.HideAndDontSave;
-            runtimeFogSettings = runtimeFogProfile.Add<DawnFogVolume>(true);
-
-            runtimeFogVolume = runtimeFogVolumeObject.AddComponent<Volume>();
-            runtimeFogVolume.isGlobal = true;
-            runtimeFogVolume.priority = RuntimeFogVolumePriority;
-            runtimeFogVolume.weight = 1f;
-            runtimeFogVolume.sharedProfile = runtimeFogProfile;
-        }
-
-        private void UpdateRuntimeFogVolume(WeatherBlendResult result)
-        {
-            if (runtimeFogSettings == null)
-            {
-                return;
-            }
-
-            float baseHeight = result.FogHeight;
-            ResolveRuntimeFogToggles(
-                result.DominantSourceIndex,
-                out bool fogEnabled,
-                out bool fogAffectSky);
-            SetOverride(runtimeFogSettings.enabled, fogEnabled);
-            SetOverride(
-                runtimeFogSettings.meanFreePath,
-                Mathf.Max(0.01f, result.FogDistance));
-            SetOverride(runtimeFogSettings.baseHeight, baseHeight);
-            SetOverride(runtimeFogSettings.albedo, result.FogColor);
-            SetOverride(
-                runtimeFogSettings.maximumHeight,
-                baseHeight + DefaultFogHeightRange);
-            SetOverride(
-                runtimeFogSettings.maximumFogDistance,
-                DefaultMaximumFogDistance);
-            SetOverride(runtimeFogSettings.affectSky, fogAffectSky);
-        }
-
-        private void ResolveRuntimeFogToggles(
+        private void ResolvePipelineFogToggles(
             int sourceIndex,
             out bool fogEnabled,
             out bool fogAffectSky)
@@ -1186,44 +1120,60 @@ namespace DawnTOD
             }
         }
 
-        private static void SetOverride<T>(VolumeParameter<T> parameter, T value)
+        private IWeatherPipelineOutput ResolvePipelineOutput()
         {
-            parameter.overrideState = true;
-            parameter.value = value;
-        }
-
-        private void ReleaseRuntimeFogVolume()
-        {
-            if (runtimeFogVolume != null)
+            WeatherRenderPipelineKind currentPipelineKind =
+                WeatherPipelineCapabilities.Current.PipelineKind;
+            if (pipelineOutput != null &&
+                pipelineOutputKind == currentPipelineKind)
             {
-                runtimeFogVolume.enabled = false;
+                return pipelineOutput;
             }
 
-            DestroyRuntimeFogObject(runtimeFogVolumeObject);
-            DestroyRuntimeFogObject(runtimeFogProfile);
-            runtimeFogVolumeObject = null;
-            runtimeFogVolume = null;
-            runtimeFogProfile = null;
-            runtimeFogSettings = null;
+            ReleasePipelineOutput();
+            if (currentPipelineKind == WeatherRenderPipelineKind.Unknown ||
+                !WeatherPipelineOutputRegistry.TryCreate(
+                    currentPipelineKind,
+                    this,
+                    out pipelineOutput))
+            {
+                pipelineOutputKind = WeatherRenderPipelineKind.Unknown;
+                return null;
+            }
+
+            pipelineOutputKind = currentPipelineKind;
+            pipelineOutputNeedsApply = true;
+            return pipelineOutput;
         }
 
-        private static void DestroyRuntimeFogObject(UnityEngine.Object target)
+        private void PreparePipelineOutput()
         {
-            if (target == null)
+            IWeatherPipelineOutput output = ResolvePipelineOutput();
+            if (output == null)
             {
                 return;
             }
 
-#if UNITY_EDITOR
-            if (!Application.isPlaying)
+            output.Prepare();
+            if (pipelineOutputNeedsApply && hasMixedResult)
             {
-                DestroyImmediate(target);
+                pipelineOutputNeedsApply = false;
+                ApplyMixedWeatherResult();
+            }
+        }
+
+        private void ReleasePipelineOutput()
+        {
+            if (pipelineOutput == null)
+            {
                 return;
             }
-#endif
-            Destroy(target);
+
+            pipelineOutput.Release();
+            pipelineOutput = null;
+            pipelineOutputKind = WeatherRenderPipelineKind.Unknown;
+            pipelineOutputNeedsApply = false;
         }
-#endif
 
         private void CheckDayNightTransition()
         {

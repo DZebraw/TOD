@@ -1,10 +1,11 @@
 using System;
+#if DAWNTOD_URP_AVAILABLE
 using UnityEngine;
 using UnityEngine.Rendering;
 
 namespace DawnTOD
 {
-#if USING_URP
+#if DAWNTOD_URP_AVAILABLE
     [VolumeComponentMenu("Dawn TOD/Atmosphere")]
 #else
     [HideInInspector]
@@ -72,3 +73,4 @@ namespace DawnTOD
             new ClampedFloatParameter(0.99f, -1f, 1f);
     }
 }
+#endif

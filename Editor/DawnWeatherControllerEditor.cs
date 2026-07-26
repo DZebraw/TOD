@@ -15,10 +15,8 @@ namespace DawnTODEditor
 
         private SerializedProperty activePresetProp;
         private SerializedProperty timeOfDayProp;
-#if USING_URP
         private SerializedProperty fogEnabledProp;
         private SerializedProperty fogAffectSkyProp;
-#endif
 
         private SerializedObject presetSerializedObject;
         private SerializedProperty sunAzimuthCurveProp;
@@ -29,15 +27,11 @@ namespace DawnTODEditor
         private SerializedProperty moonElevationProp;
         private SerializedProperty moonIntensityCurveProp;
         private SerializedProperty moonColorGradientProp;
-#if USING_HDRP || USING_URP
         private SerializedProperty starEmissionCurveProp;
         private SerializedProperty fogHeightCurveProp;
         private SerializedProperty fogDistanceCurveProp;
         private SerializedProperty fogColorGradientProp;
-#endif
-#if USING_HDRP
         private SerializedProperty exposureCompensationCurveProp;
-#endif
         private SerializedProperty rainySpeedCurveProp;
         private SerializedProperty precipitationAmountCurveProp;
         private SerializedProperty rainDensityCurveProp;
@@ -47,9 +41,7 @@ namespace DawnTODEditor
         private bool showMoonSettings = true;
         private bool showSkySettings = true;
         private bool showFogSettings = true;
-#if USING_HDRP
         private bool showExposureSettings = true;
-#endif
         private bool showRainySettings = true;
         private DawnTODSystem debugPreviewSystem;
         private DawnWeatherController debugPreviewController;
@@ -58,10 +50,8 @@ namespace DawnTODEditor
         {
             activePresetProp = serializedObject.FindProperty("activePreset");
             timeOfDayProp = serializedObject.FindProperty("timeOfDay");
-#if USING_URP
             fogEnabledProp = serializedObject.FindProperty("fogEnabled");
             fogAffectSkyProp = serializedObject.FindProperty("fogAffectSky");
-#endif
 
             UpdatePresetSerializedProperties();
         }
@@ -90,15 +80,11 @@ namespace DawnTODEditor
             moonElevationProp = presetSerializedObject.FindProperty("moonElevationCurve");
             moonIntensityCurveProp = presetSerializedObject.FindProperty("moonIntensityCurve");
             moonColorGradientProp = presetSerializedObject.FindProperty("moonColorGradient");
-#if USING_HDRP || USING_URP
             starEmissionCurveProp = presetSerializedObject.FindProperty("starEmissionCurve");
             fogHeightCurveProp = presetSerializedObject.FindProperty("fogHeightCurve");
             fogDistanceCurveProp = presetSerializedObject.FindProperty("fogDistanceCurve");
             fogColorGradientProp = presetSerializedObject.FindProperty("fogColorGradient");
-#endif
-#if USING_HDRP
             exposureCompensationCurveProp = presetSerializedObject.FindProperty("exposureCompensationCurve");
-#endif
             rainySpeedCurveProp = presetSerializedObject.FindProperty("rainySpeedCurve");
             precipitationAmountCurveProp = presetSerializedObject.FindProperty("precipitationAmountCurve");
             rainDensityCurveProp = presetSerializedObject.FindProperty("rainDensityCurve");
@@ -110,6 +96,8 @@ namespace DawnTODEditor
             serializedObject.Update();
 
             DawnWeatherController controller = (DawnWeatherController)target;
+            WeatherPipelineCapabilities capabilities =
+                ResolvePipelineCapabilities();
 
             // ========== 预设 ==========
             EditorGUILayout.LabelField("Preset", EditorStyles.boldLabel);
@@ -161,60 +149,78 @@ namespace DawnTODEditor
                     DrawGradientField("Moon Color", moonColorGradientProp, controller.NormalizedTime);
                     EditorGUI.indentLevel--;
                 }
-#if USING_HDRP || USING_URP
-                //====Sky====
-                showSkySettings = EditorGUILayout.Foldout(showSkySettings, "Sky Settings", true);
-                if (showSkySettings)
+                if (capabilities.SupportsStarEmission)
                 {
-                    EditorGUI.indentLevel++;
-                    DrawCurveField("Star Emission", starEmissionCurveProp, controller.NormalizedTime);
-                    EditorGUI.indentLevel--;
-                }
-#endif
-#if USING_HDRP || USING_URP
-                //====Fog====
-                showFogSettings = EditorGUILayout.Foldout(showFogSettings, "Fog Settings", true);
-                if (showFogSettings)
-                {
-                    EditorGUI.indentLevel++;
-#if USING_URP
-                    EditorGUILayout.PropertyField(fogEnabledProp, new GUIContent("Enable"));
-                    EditorGUILayout.PropertyField(fogAffectSkyProp, new GUIContent("Affect Sky"));
-#endif
-                    DrawCurveField("Base Height (m)", fogHeightCurveProp, controller.NormalizedTime);
-                    DrawCurveField("Mean Free Path (m)", fogDistanceCurveProp, controller.NormalizedTime);
-                    DrawGradientField("Albedo", fogColorGradientProp, controller.NormalizedTime);
-#if USING_URP
-                    if (DawnFogRendererFeatureEditorUtility.IsInstalled(out var rendererData))
+                    //====Sky====
+                    showSkySettings = EditorGUILayout.Foldout(
+                        showSkySettings,
+                        "Sky Settings",
+                        true);
+                    if (showSkySettings)
                     {
-                        EditorGUILayout.HelpBox(
-                            $"URP output is active on '{rendererData.name}'.",
-                            MessageType.Info);
+                        EditorGUI.indentLevel++;
+                        DrawCurveField(
+                            "Star Emission",
+                            starEmissionCurveProp,
+                            controller.NormalizedTime);
+                        EditorGUI.indentLevel--;
                     }
-                    else
+                }
+
+                if (capabilities.SupportsFog)
+                {
+                    //====Fog====
+                    showFogSettings = EditorGUILayout.Foldout(
+                        showFogSettings,
+                        "Fog Settings",
+                        true);
+                    if (showFogSettings)
                     {
-                        EditorGUILayout.HelpBox(
-                            "These fog tracks are sampled, but the default URP Renderer Data is missing Dawn TOD Fog.",
-                            MessageType.Warning);
-                        if (GUILayout.Button("Install Dawn TOD Fog Renderer Feature"))
+                        EditorGUI.indentLevel++;
+                        EditorGUILayout.PropertyField(
+                            fogEnabledProp,
+                            new GUIContent("Enable"));
+                        if (capabilities.PipelineKind ==
+                            WeatherRenderPipelineKind.Universal)
                         {
-                            DawnFogRendererFeatureEditorUtility.InstallOnDefaultRenderer(out _);
+                            EditorGUILayout.PropertyField(
+                                fogAffectSkyProp,
+                                new GUIContent("Affect Sky"));
                         }
+
+                        DrawCurveField(
+                            "Base Height (m)",
+                            fogHeightCurveProp,
+                            controller.NormalizedTime);
+                        DrawCurveField(
+                            "Mean Free Path (m)",
+                            fogDistanceCurveProp,
+                            controller.NormalizedTime);
+                        DrawGradientField(
+                            "Albedo",
+                            fogColorGradientProp,
+                            controller.NormalizedTime);
+                        EditorGUI.indentLevel--;
                     }
-#endif
-                    EditorGUI.indentLevel--;
                 }
-#endif
-#if USING_HDRP
-                //====Exposure====
-                showExposureSettings = EditorGUILayout.Foldout(showExposureSettings, "Exposure Settings", true);
-                if (showExposureSettings)
+
+                if (capabilities.SupportsExposure)
                 {
-                    EditorGUI.indentLevel++;
-                    DrawCurveField("Exposure Compensation", exposureCompensationCurveProp, controller.NormalizedTime);
-                    EditorGUI.indentLevel--;
+                    //====Exposure====
+                    showExposureSettings = EditorGUILayout.Foldout(
+                        showExposureSettings,
+                        "Exposure Settings",
+                        true);
+                    if (showExposureSettings)
+                    {
+                        EditorGUI.indentLevel++;
+                        DrawCurveField(
+                            "Exposure Compensation",
+                            exposureCompensationCurveProp,
+                            controller.NormalizedTime);
+                        EditorGUI.indentLevel--;
+                    }
                 }
-#endif
                 //====Rain====
                 showRainySettings = EditorGUILayout.Foldout(showRainySettings, "Rainy Settings", true);
                 if (showRainySettings)
@@ -320,6 +326,15 @@ namespace DawnTODEditor
 
             debugPreviewSystem = null;
             debugPreviewController = null;
+        }
+
+        private static WeatherPipelineCapabilities
+            ResolvePipelineCapabilities()
+        {
+            DawnTODSystem system = DawnTODSystem.Instance;
+            return system != null
+                ? system.PipelineCapabilities
+                : WeatherPipelineCapabilities.Current;
         }
 
         internal static bool ApplyControllerModifiedPropertiesAndRefresh(

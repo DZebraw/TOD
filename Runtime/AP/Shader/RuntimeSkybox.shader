@@ -2,6 +2,11 @@
 {
     SubShader
     {
+        PackageRequirements
+        {
+            "com.unity.render-pipelines.universal": "[14.0.0,15.0.0)"
+        }
+
         Tags { "Queue" = "Background" "RenderType" = "Background" "RenderPipeline" = "UniversalPipeline" "PreviewType" = "Skybox" }
         ZWrite Off Cull Off
         

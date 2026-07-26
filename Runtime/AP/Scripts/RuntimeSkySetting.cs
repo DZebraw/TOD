@@ -1,4 +1,5 @@
 ﻿using System;
+#if DAWNTOD_URP_AVAILABLE
 using System.Linq;
 using UnityEngine;
 
@@ -126,10 +127,13 @@ namespace DawnTOD
         private Texture2D m_SunOnSurfaceLUTReadToCPU;
         private bool m_AmbientReadbackPending;
         private bool m_AmbientReadbackWarningLogged;
+        private int m_AmbientReadbackGeneration;
 
         private Camera m_Camera;
         private Vector3[] m_FrustumCorners = new Vector3[4];
         private Vector4[] m_FrustumCornersVec4 = new Vector4[4];
+        private bool m_PipelineOutputActive;
+        private bool m_PipelineOutputSuspended;
 
         private void UpdateParams(DawnAtmosphereVolume volume)
         {
@@ -221,12 +225,48 @@ namespace DawnTOD
         public void SetSpaceEmissionMultiplier(float multiplier)
         {
             spaceEmissionMultiplier = SanitizeSpaceEmission(multiplier);
+            if (CanRenderPipelineOutput())
+            {
+                ApplySpaceParams(GetActiveAtmosphereVolume());
+            }
+        }
+
+        internal void SetPipelineOutputActive(bool active)
+        {
+            bool shouldActivate =
+                active &&
+                isActiveAndEnabled &&
+                IsUniversalPipelineActive();
+            if (m_PipelineOutputActive == shouldActivate)
+            {
+                if (!shouldActivate)
+                {
+                    SuspendPipelineOutput();
+                }
+                return;
+            }
+
+            m_PipelineOutputActive = shouldActivate;
+            if (!shouldActivate)
+            {
+                SuspendPipelineOutput();
+                return;
+            }
+
+            m_PipelineOutputSuspended = false;
+            if (m_Camera == null)
+            {
+                m_Camera = Camera.main;
+            }
+            FindAndSetDirectionalLight();
+            EnsureComputerShader();
+            SetSkyboxMaterial();
             ApplySpaceParams(GetActiveAtmosphereVolume());
         }
 
         private static DawnAtmosphereVolume GetActiveAtmosphereVolume()
         {
-#if USING_URP
+#if DAWNTOD_URP_AVAILABLE
             VolumeStack stack = VolumeManager.instance.stack;
             return stack != null ? stack.GetComponent<DawnAtmosphereVolume>() : null;
 #else
@@ -418,13 +458,15 @@ namespace DawnTOD
             var cosAngle01 = Mathf.Clamp01(Vector3.Dot(Vector3.up, lightDir) * 0.5f + 0.5f);
             int lutWidth = m_AmbientLUT.width;
             m_AmbientReadbackPending = true;
+            int readbackGeneration = m_AmbientReadbackGeneration;
 
             if (!ScatteringUtils.RequestRTpixelsBackToCPU(
                     m_AmbientLUT, TextureFormat.RGBAFloat,
                     request => OnAmbientReadbackCompleted(
                         request,
                         cosAngle01,
-                        lutWidth)))
+                        lutWidth,
+                        readbackGeneration)))
             {
                 m_AmbientReadbackPending = false;
             }
@@ -433,13 +475,19 @@ namespace DawnTOD
         private void OnAmbientReadbackCompleted(
             AsyncGPUReadbackRequest request,
             float cosAngle01,
-            int lutWidth)
+            int lutWidth,
+            int readbackGeneration)
         {
             if (this == null)
                 return;
 
+            if (readbackGeneration != m_AmbientReadbackGeneration)
+                return;
+
             m_AmbientReadbackPending = false;
-            if (!isActiveAndEnabled || request.hasError)
+            if (!isActiveAndEnabled ||
+                !CanRenderPipelineOutput() ||
+                request.hasError)
                 return;
 
             var pixels = request.GetData<Color>();
@@ -529,22 +577,26 @@ namespace DawnTOD
         private void Awake()
         {
             m_Camera = Camera.main;
-            
-            FindAndSetDirectionalLight();
-            
-            EnsureComputerShader();
-            SetSkyboxMaterial();
+            m_PipelineOutputActive = false;
+            SuspendPipelineOutput();
         }
 
         private void OnEnable()
         {
-            EnsureComputerShader();
-            ApplySpaceParams(GetActiveAtmosphereVolume());
+            m_PipelineOutputActive = false;
+            SuspendPipelineOutput();
         }
 
         private void OnValidate()
         {
             spaceEmissionMultiplier = SanitizeSpaceEmission(spaceEmissionMultiplier);
+            if (!CanRenderPipelineOutput())
+            {
+                SuspendPipelineOutput();
+                return;
+            }
+
+            m_PipelineOutputSuspended = false;
             ApplySpaceParams(GetActiveAtmosphereVolume());
         }
 
@@ -600,12 +652,32 @@ namespace DawnTOD
 
         private void OnDisable()
         {
-            if (m_IntegrateCPDensityLUT != null) m_IntegrateCPDensityLUT.Release();
-            Shader.SetGlobalFloat(ScatteringKeys.kSpaceEmissionMultiplier, 0f);
+            m_PipelineOutputActive = false;
+            SuspendPipelineOutput();
+            m_AmbientReadbackGeneration++;
+            m_AmbientReadbackPending = false;
+            ReleaseRenderTexture(ref m_IntegrateCPDensityLUT);
+            ReleaseRenderTexture(ref m_SunOnSurfaceLUT);
+            ReleaseRenderTexture(ref m_AmbientLUT);
+            ReleaseRenderTexture(ref m_InScatteringLUT);
         }
 
         private void Update()
         {
+            if (!IsUniversalPipelineActive())
+            {
+                m_PipelineOutputActive = false;
+                SuspendPipelineOutput();
+                return;
+            }
+
+            if (!m_PipelineOutputActive)
+            {
+                SuspendPipelineOutput();
+                return;
+            }
+
+            m_PipelineOutputSuspended = false;
             DawnAtmosphereVolume atmosphereVolume = GetActiveAtmosphereVolume();
             FindAndSetDirectionalLight();
             UpdateParams(atmosphereVolume);
@@ -615,7 +687,54 @@ namespace DawnTOD
             UpdateAmbient();
         }
 
+        private bool CanRenderPipelineOutput()
+        {
+            return m_PipelineOutputActive &&
+                   IsUniversalPipelineActive();
+        }
+
+        private static bool IsUniversalPipelineActive()
+        {
+            return WeatherPipelineCapabilities.Current.PipelineKind ==
+                   WeatherRenderPipelineKind.Universal;
+        }
+
+        private void SuspendPipelineOutput()
+        {
+            if (m_PipelineOutputSuspended)
+            {
+                return;
+            }
+
+            m_PipelineOutputSuspended = true;
+            Shader.SetGlobalFloat(
+                ScatteringKeys.kSpaceEmissionMultiplier,
+                0f);
+        }
+
+        private static void ReleaseRenderTexture(
+            ref RenderTexture renderTexture)
+        {
+            if (renderTexture == null)
+            {
+                return;
+            }
+
+            renderTexture.Release();
+#if UNITY_EDITOR
+            if (!Application.isPlaying)
+            {
+                DestroyImmediate(renderTexture);
+                renderTexture = null;
+                return;
+            }
+#endif
+            Destroy(renderTexture);
+            renderTexture = null;
+        }
+
 
 
     }
 }
+#endif

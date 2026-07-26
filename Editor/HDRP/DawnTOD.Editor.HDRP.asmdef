@@ -1,0 +1,31 @@
+{
+    "name": "DawnTOD.Editor.HDRP",
+    "rootNamespace": "DawnTODEditor",
+    "references": [
+        "GUID:89d8a991ce72fd445a6b4ff441d3702c",
+        "GUID:c0c9e0bd0ae24dc293dd65d147262c1d",
+        "GUID:df380645f10b7bc4b97d4f5eb6303d95",
+        "GUID:3eae0364be2026648bf74846acb8a731",
+        "GUID:457756d89b35d2941b3e7b37b4ece6f1",
+        "GUID:78bd2ddd6e276394a9615c203e574844"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": true,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": false,
+    "defineConstraints": [
+        "DAWNTOD_HDRP_AVAILABLE"
+    ],
+    "versionDefines": [
+        {
+            "name": "com.unity.render-pipelines.high-definition",
+            "expression": "[14.0.0,15.0.0)",
+            "define": "DAWNTOD_HDRP_AVAILABLE"
+        }
+    ],
+    "noEngineReferences": false
+}

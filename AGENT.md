@@ -13,7 +13,7 @@
 - Unity 基线：`2022.3`
 - 包类型：Unity Package Manager（UPM）插件
 - 当前仓库是插件包根目录，不是完整 Unity 工程；仓库中没有宿主项目的 `ProjectSettings`、场景和完整 `Assets` 目录。
-- `package.json` 当前没有额外包依赖。不要未经必要性评估就引入新的外部依赖。
+- `package.json` 当前只显式依赖 `com.unity.nuget.newtonsoft-json`。不要未经必要性评估就引入新的外部依赖。
 
 `.LinkUnity.bat` 用于把本仓库链接到宿主 Unity 工程的 `Packages/com.tencent.dawn.tod`。它会请求管理员权限，并在目标目录下创建目录符号链接；涉及链接或 Unity 编译时应使用一个实际的 Unity 2022.3 宿主工程。
 
@@ -25,8 +25,9 @@
 | `Runtime/Core/` | 时间管理和全局 TOD 事件 | `TimeManager`、`TODEvents` |
 | `Runtime/Data/` | 天气预设 ScriptableObject | `DawnWeatherPreset` 的曲线和渐变字段属于序列化数据 |
 | `Runtime/Scripts/` | TOD 系统、天气控制器、GPU 雨滴粒子 | `DawnTODSystem` 是场景中心入口 |
-| `Runtime/AP/` | URP 运行时天空/大气效果及其 Shader | 受 `USING_URP` 条件编译影响 |
-| `Runtime/HDRP/` | HDRP 集成 | 受 `USING_HDRP` 条件编译影响 |
+| `Runtime/AP/` | URP 运行时天空/大气效果及其 Shader | C# 通过 `Runtime/AP/DawnTOD.URP.asmref` 归入 `DawnTOD.URP` |
+| `Runtime/URP/` | URP Renderer Feature 和管线输出适配器程序集 | 由 URP 14 的 `versionDefines` 启用 |
+| `Runtime/HDRP/` | HDRP 管线输出适配器及旧兼容入口 | 由 HDRP 14 的 `versionDefines` 启用 |
 | `Runtime/Resources/`、`Runtime/Shader/` | 降雨粒子计算、默认 Prefab/Material 和渲染 | 改 C# 参数时要同步检查 Shader/Compute Shader 属性 |
 | `Runtime/Resources/Textures/`、`Texture/` | 包内运行时纹理和天空/月亮纹理 | Unity 资源必须保留对应 `.meta` |
 | `Editor/` | Unity 编辑器 Inspector、Hierarchy 菜单、Lighting Editor | 仅编辑器代码，主要命名空间为 `DawnTODEditor` |
@@ -35,8 +36,15 @@
 
 程序集边界由以下文件定义：
 
-- `Runtime/DawnTOD.asmdef`：运行时程序集，`autoReferenced` 为 `false`。
-- `Editor/DawnTOD.Editor.asmdef`：编辑器程序集，仅包含 `Editor` 平台，`autoReferenced` 为 `false`。
+- `Runtime/DawnTOD.asmdef`：管线中立的运行时核心，`autoReferenced` 为 `false`。
+- `Runtime/URP/DawnTOD.URP.asmdef`：URP 运行时适配器；`Runtime/AP/DawnTOD.URP.asmref` 将 AP C# 合入该程序集。
+- `Runtime/HDRP/DawnTOD.HDRP.asmdef`：HDRP 运行时适配器。
+- `Editor/DawnTOD.Editor.asmdef`：管线中立的编辑器程序集，仅包含 `Editor` 平台。
+- `Editor/URP/DawnTOD.Editor.URP.asmdef`、`Editor/HDRP/DawnTOD.Editor.HDRP.asmdef`：对应管线的编辑器扩展。
+
+所有上述程序集都保持 `autoReferenced = false`；URP/HDRP 运行时程序集使用 `AlwaysLinkAssembly`，保证仅靠 `RuntimeInitializeOnLoadMethod` 注册时不会在 Player 中被整程序集裁掉。
+
+外部自定义 `.asmdef` 若直接使用 `RuntimeSkySetting`、Dawn URP Volume 或 Renderer Feature，除 `DawnTOD` 外还必须显式引用 `DawnTOD.URP`；HDRP 专属类型同理引用 `DawnTOD.HDRP`。
 
 新增或移动 Unity 资产、脚本、Shader、Compute Shader 时，必须检查 `.meta` 文件和 GUID 引用是否保持正确。不要把 `Editor` 程序集类型引用带入 Runtime。
 
@@ -57,13 +65,14 @@ DawnTODSystem（时间、控制器发现、时间段和天气混合）
 ### 主要类型
 
 - `Runtime/Scripts/DawnTODSystem.cs`：场景中的中心 TOD `MonoBehaviour`，维护当前时间、日光/月光引用、天气控制器列表和时间段，评估并混合有效预设；提供 `Instance` 单例入口。该类使用 `[ExecuteAlways]`，编辑模式和播放模式行为都要考虑。
-- `Runtime/Scripts/DawnWeatherController.cs`：单个天气控制器，持有 `ActivePreset`，按照时间评估预设并刷新光源、HDRP Volume 或降雨参数。
+- `Runtime/Scripts/DawnWeatherController.cs`：单个天气控制器，持有 `ActivePreset` 并提供天气数据与雾开关；场景输出统一由 `DawnTODSystem` 应用。
 - `Runtime/Data/DawnWeatherPreset.cs`：`ScriptableObject`，使用 `AnimationCurve` 和 `Gradient` 保存日月方位/高度/强度/颜色、HDRP 天空/雾/曝光以及降雨参数。
 - `Runtime/Core/TimeManager.cs`：封装时间推进和日出、日落、午夜事件。时间以小时表示，并在 `0–24` 范围循环。
 - `Runtime/Core/TODEvents.cs`：全局静态事件总线，提供时间变化、日出、日落、午夜和预设切换事件；场景切换或系统销毁时注意监听器清理。
 - `Runtime/Scripts/GPUParticlesSystem.cs`：`DawnGPUParticleSystem`，配合 `Runtime/Resources/RainyParticleUpdate.compute`、默认雨水 Prefab/Material 和 `Runtime/Shader/RaindropParticle.shader` 实现 GPU 雨滴。
-- `Runtime/AP/Scripts/RuntimeSkySetting.cs`：URP 运行时天空设置；由 `USING_URP` 代码路径使用，修改时要确认其在不同管线项目中的依赖关系。
-- `Runtime/HDRP/HDRPIntegration.cs`：HDRP 相关集成；只在 `USING_HDRP` 代码路径下使用。
+- `Runtime/Core/WeatherPipelineOutput.cs`：管线中立输出契约、状态 DTO 与可选适配器注册表。
+- `Runtime/AP/Scripts/RuntimeSkySetting.cs`、`URPWeatherPipelineOutput.cs`：URP 天空/雾输出；只编入 `DawnTOD.URP`。
+- `Runtime/HDRP/HDRPWeatherPipelineOutput.cs`：HDRP Volume 输出；`HDRPIntegration.cs` 仅保留旧兼容入口。
 
 ### 时间与控制约定
 
@@ -76,18 +85,21 @@ DawnTODSystem（时间、控制器发现、时间段和天气混合）
 
 ## 渲染管线与条件编译
 
-`Editor/AutoDefineRenderPipelineSymbols.cs` 会根据当前 `QualitySettings.renderPipeline` 或 `GraphicsSettings.defaultRenderPipeline` 的实际类型，自动维护以下宏：
+包不再修改宿主工程的全局 Scripting Define Symbols。可选程序集通过各自 `.asmdef` 的 `versionDefines` 和 `defineConstraints` 隔离：
 
-- `USING_URP`：URP 代码路径。
-- `USING_HDRP`：HDRP 代码路径。
+- `DAWNTOD_URP_AVAILABLE`：安装 URP 14.x 时启用 URP 运行时与编辑器程序集。
+- `DAWNTOD_HDRP_AVAILABLE`：安装 HDRP 14.x 时启用 HDRP 运行时与编辑器程序集。
+
+核心通过 `WeatherPipelineCapabilities.Current` 检测当前实际 Render Pipeline，再从 `WeatherPipelineOutputRegistry` 创建对应策略；核心代码不得反向引用 URP/HDRP 实现类型。
 
 修改渲染管线代码时：
 
-1. 保持 `UnityEngine.Rendering.HighDefinition` 等管线专属引用位于对应 `#if` 块内。
+1. 管线专属 C# 必须放在对应可选程序集，并保留可用性宏保护；不要把 URP/HDRP 类型引用带回 `DawnTOD` 核心。
 2. 同时考虑 URP、HDRP 和未知/内置管线三种情况；不要假设所有宿主项目都有 HDRP 或 URP。
-3. 不要随意手工固定或删除 `USING_URP`、`USING_HDRP`；先检查自动检测逻辑和宿主工程的当前 Render Pipeline。
+3. 不要重新引入自动写全局宏的逻辑；包版本可用性由 `.asmdef` 决定，当前激活管线由 capabilities 决定。
 4. 修改 C# 与 Shader/Compute Shader 交互时，核对属性名、资源路径、纹理/缓冲区布局和管线差异。
 5. 管线相关改动至少在对应 Unity 管线宿主工程中编译；未覆盖的管线必须在交付说明中明确写出。
+6. URP Shader 的 `PackageRequirements` 必须与 URP 程序集版本范围同步；`Runtime/Resources/Precomputation.compute` 仍依赖 SRP Core。纯 Built-in 宿主若没有 `com.unity.render-pipelines.core`，当前包不能保证完整导入。
 
 ## Unity 编辑器入口
 

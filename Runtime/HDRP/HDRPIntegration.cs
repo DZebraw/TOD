@@ -1,4 +1,4 @@
-#if USING_HDRP
+#if DAWNTOD_HDRP_AVAILABLE
 using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.Rendering.HighDefinition;

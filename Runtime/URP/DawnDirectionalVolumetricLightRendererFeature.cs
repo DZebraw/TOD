@@ -1,4 +1,4 @@
-#if USING_URP
+#if DAWNTOD_URP_AVAILABLE
 using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.Rendering.Universal;

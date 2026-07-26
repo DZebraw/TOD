@@ -20,6 +20,9 @@ namespace DawnTODEditor
 
             GameObject todRoot = new GameObject("Dawn TOD System");
             DawnTODSystem todSystem = todRoot.AddComponent<DawnTODSystem>();
+            WeatherPipelineOutputEditorUtility.EnsureAuthoringComponent(
+                todSystem,
+                false);
 
             if (Selection.activeGameObject != null)
             {

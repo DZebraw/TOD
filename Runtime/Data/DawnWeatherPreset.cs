@@ -4,7 +4,6 @@ using UnityEngine.Serialization;
 
 namespace DawnTOD
 {
-    [CreateAssetMenu(fileName = "TODPreset", menuName = "MagicDawn/TODPreset", order = 100)]
     public class DawnWeatherPreset : ScriptableObject
     {
         // ========== 太阳曲线 ==========
@@ -15,7 +14,8 @@ namespace DawnTOD
         public AnimationCurve sunElevationCurve = CreateDefaultSunElevationCurve();
 
         [Tooltip("太阳强度曲线 (X: 0-1 归一化时间, Y: 强度 lux)")]
-        public AnimationCurve sunIntensityCurve = CreateDefaultSunIntensityCurve();
+        public AnimationCurve sunIntensityCurve =
+            CreateDefaultSunIntensityCurve(WeatherRenderPipelineKind.Unknown);
 
         [Tooltip("太阳颜色渐变 (X: 0-1 归一化时间)")]
         public Gradient sunColorGradient = CreateDefaultSunColorGradient();
@@ -28,7 +28,8 @@ namespace DawnTOD
         public AnimationCurve moonElevationCurve = CreateDefaultMoonElevationCurve();
 
         [Tooltip("月亮强度曲线 (X: 0-1 归一化时间, Y: 强度 lux)")]
-        public AnimationCurve moonIntensityCurve = CreateDefaultMoonIntensityCurve();
+        public AnimationCurve moonIntensityCurve =
+            CreateDefaultMoonIntensityCurve(WeatherRenderPipelineKind.Unknown);
 
         [Tooltip("月亮颜色渐变 (X: 0-1 归一化时间)")]
         public Gradient moonColorGradient = CreateDefaultMoonColorGradient();
@@ -59,7 +60,6 @@ namespace DawnTOD
         public AnimationCurve rainySpeedCurve = CreateDefaultRainySpeedCurve();
         public AnimationCurve rainDensityCurve = CreateDefaultRainDensityCurve();
         public AnimationCurve rainWindZRotationCurve = CreateDefaultRainWindZRotationCurve();
-
 
         // ========== 时间控制曲线 ==========
         // [Tooltip("时间重映射曲线 (X: 实际流逝时间 0-1, Y: 映射后 TOD 时间 0-1)，必须单调递增")]
@@ -95,25 +95,44 @@ namespace DawnTOD
             return curve;
         }
 
-        private static AnimationCurve CreateDefaultSunIntensityCurve()
+        /// <summary>
+        /// Creates an unsaved preset with intensity defaults for the requested
+        /// render pipeline. Use this instead of CreateInstance when the pipeline
+        /// specific HDRP light units are required.
+        /// </summary>
+        public static DawnWeatherPreset CreateWithDefaults(
+            WeatherRenderPipelineKind pipelineKind)
         {
-#if USING_HDRP
+            DawnWeatherPreset preset =
+                CreateInstance<DawnWeatherPreset>();
+            preset.sunIntensityCurve =
+                CreateDefaultSunIntensityCurve(pipelineKind);
+            preset.moonIntensityCurve =
+                CreateDefaultMoonIntensityCurve(pipelineKind);
+            return preset;
+        }
+
+        private static AnimationCurve CreateDefaultSunIntensityCurve(
+            WeatherRenderPipelineKind pipelineKind)
+        {
+            if (pipelineKind == WeatherRenderPipelineKind.HighDefinition)
+            {
+                return new AnimationCurve(
+                    new Keyframe(0f, 0f),       // 00:00
+                    new Keyframe(0.25f, 5000f),// 06:00 日出
+                    new Keyframe(0.5f, 130000f),// 12:00 正午
+                    new Keyframe(0.75f, 5000f),// 18:00 日落
+                    new Keyframe(1f, 0f)        // 24:00
+                );
+            }
+
             return new AnimationCurve(
                 new Keyframe(0f, 0f),       // 00:00
-                new Keyframe(0.25f, 5000f),// 06:00 日出
-                new Keyframe(0.5f, 130000f),// 12:00 正午
-                new Keyframe(0.75f, 5000f),// 18:00 日落
+                new Keyframe(0.25f, 0.2f),// 06:00 日出
+                new Keyframe(0.5f, 2f),// 12:00 正午
+                new Keyframe(0.75f, 0.2f),// 18:00 日落
                 new Keyframe(1f, 0f)        // 24:00
             );
-#else
-            return new AnimationCurve(
-            new Keyframe(0f, 0f),       // 00:00
-            new Keyframe(0.25f, 0.2f),// 06:00 日出
-            new Keyframe(0.5f, 2f),// 12:00 正午
-            new Keyframe(0.75f, 0.2f),// 18:00 日落
-            new Keyframe(1f, 0f)        // 24:00
-        );
-#endif
         }
 
         private static Gradient CreateDefaultSunColorGradient()
@@ -164,19 +183,21 @@ namespace DawnTOD
             return curve;
         }
 
-        private static AnimationCurve CreateDefaultMoonIntensityCurve()
+        private static AnimationCurve CreateDefaultMoonIntensityCurve(
+            WeatherRenderPipelineKind pipelineKind)
         {
-#if USING_HDRP
-            return new AnimationCurve(
-                new Keyframe(0f, 5000f),    // 00:00 午夜
-                new Keyframe(1f, 5000f)     // 24:00
-            );
-#else
+            if (pipelineKind == WeatherRenderPipelineKind.HighDefinition)
+            {
+                return new AnimationCurve(
+                    new Keyframe(0f, 5000f),    // 00:00 午夜
+                    new Keyframe(1f, 5000f)     // 24:00
+                );
+            }
+
             return new AnimationCurve(
                 new Keyframe(0f, 0.2f),    // 00:00 午夜
                 new Keyframe(1f, 0.2f)     // 24:00
             );
-#endif
         }
 
         private static Gradient CreateDefaultMoonColorGradient()

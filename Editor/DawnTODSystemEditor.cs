@@ -4,9 +4,6 @@ using System.Globalization;
 using DawnTOD;
 using UnityEditor;
 using UnityEngine;
-#if USING_HDRP
-using UnityEngine.Rendering.HighDefinition;
-#endif
 
 namespace DawnTODEditor
 {
@@ -32,9 +29,7 @@ namespace DawnTODEditor
         private SerializedProperty sunLightProp;
         private SerializedProperty moonLightProp;
         private SerializedProperty rainParticleSystemProp;
-#if USING_HDRP
         private SerializedProperty hdrpVolumeProp;
-#endif
 
         private bool showDiagnostics = true;
         private bool showDebugWeights = true;
@@ -54,9 +49,7 @@ namespace DawnTODEditor
             sunLightProp = serializedObject.FindProperty("sunLight");
             moonLightProp = serializedObject.FindProperty("moonLight");
             rainParticleSystemProp = serializedObject.FindProperty("rainParticleSystem");
-#if USING_HDRP
             hdrpVolumeProp = serializedObject.FindProperty("hdrpVolume");
-#endif
             Undo.undoRedoPerformed += OnUndoRedo;
         }
 
@@ -690,69 +683,70 @@ namespace DawnTODEditor
                     serializedObject.Update();
                 }
             }
-#if USING_HDRP
-            EditorGUILayout.PropertyField(hdrpVolumeProp, new GUIContent("HDRP Volume"));
-#endif
+            if (WeatherPipelineCapabilities.Current.PipelineKind ==
+                WeatherRenderPipelineKind.HighDefinition)
+            {
+                EditorGUILayout.PropertyField(
+                    hdrpVolumeProp,
+                    new GUIContent("HDRP Volume"));
+            }
         }
 
         private static void DrawPipelineCapability(DawnTODSystem system)
         {
             WeatherPipelineCapabilities capabilities =
-                WeatherPipelineCapabilities.Current;
+                system.PipelineCapabilities;
             EditorGUILayout.LabelField(
                 "Detected Pipeline",
                 capabilities.PipelineKind.ToString());
-#if USING_HDRP
-            EditorGUILayout.HelpBox(
-                "HDRP consumes sun, moon, Physical Sky, Fog, Exposure and rain fields.",
-                MessageType.Info);
-            DrawHdrpVolumeDiagnostics(system);
-#elif USING_URP
-            if (DawnFogRendererFeatureEditorUtility.IsInstalled(out var rendererData))
-            {
-                EditorGUILayout.HelpBox(
-                    $"URP consumes sun, moon, atmospheric sky Star Emission, post-process Fog and rain. Dawn TOD Fog is installed on '{rendererData.name}'. Exposure still has no URP scene output.",
-                    MessageType.Info);
-            }
-            else
-            {
-                EditorGUILayout.HelpBox(
-                    "URP Fog tracks require Dawn TOD Fog on the default Renderer Data. Install it once to enable the depth-based post-process output. Exposure still has no URP scene output.",
-                    MessageType.Warning);
-                if (GUILayout.Button("Install Dawn TOD Fog Renderer Feature"))
-                {
-                    DawnFogRendererFeatureEditorUtility.InstallOnDefaultRenderer(out _);
-                }
-            }
-#else
-            EditorGUILayout.HelpBox(
-                "Unknown render pipeline: directional lights and rain remain available; environment fields are skipped.",
-                MessageType.Warning);
-#endif
-        }
 
-#if USING_HDRP
-        private static void DrawHdrpVolumeDiagnostics(DawnTODSystem system)
-        {
-            if (system.hdrpVolume == null || system.hdrpVolume.profile == null)
+            if (capabilities.PipelineKind ==
+                WeatherRenderPipelineKind.Unknown)
             {
                 EditorGUILayout.HelpBox(
-                    "HDRP environment output requires a Volume with a Profile. DawnTOD will not create or modify a profile implicitly.",
+                    "Unknown render pipeline: directional lights and rain " +
+                    "remain available; environment fields are skipped.",
                     MessageType.Warning);
                 return;
             }
 
-            bool hasSky = system.hdrpVolume.profile.TryGet(out PhysicallyBasedSky _);
-            bool hasFog = system.hdrpVolume.profile.TryGet(out Fog _);
-            bool hasExposure = system.hdrpVolume.profile.TryGet(out Exposure _);
-            if (!hasSky || !hasFog || !hasExposure)
+            if (system.TryGetPipelineConfigurationError(
+                    out string configurationError))
             {
                 EditorGUILayout.HelpBox(
-                    "The HDRP Volume Profile is missing one or more required overrides: Physically Based Sky, Fog, Exposure. Add them explicitly to the profile.",
+                    configurationError,
                     MessageType.Warning);
+                if (WeatherPipelineOutputEditorUtility
+                    .CanEnsureAuthoringComponent(system))
+                {
+                    if (GUILayout.Button(
+                            "Add Required Pipeline Output Component"))
+                    {
+                        WeatherPipelineOutputEditorUtility
+                            .EnsureAuthoringComponent(system, true);
+                    }
+                }
+
+                return;
+            }
+
+            switch (capabilities.PipelineKind)
+            {
+                case WeatherRenderPipelineKind.HighDefinition:
+                    EditorGUILayout.HelpBox(
+                        "HDRP consumes sun, moon, Physical Sky, Fog, " +
+                        "Exposure and rain fields.",
+                        MessageType.Info);
+                    break;
+                case WeatherRenderPipelineKind.Universal:
+                    EditorGUILayout.HelpBox(
+                        "URP consumes sun, moon, atmospheric sky Star " +
+                        "Emission, post-process Fog and rain. Exposure has " +
+                        "no URP scene output.",
+                        MessageType.Info);
+                    break;
             }
         }
-#endif
 
         private WeatherContributionInfo? FindContribution(int scheduleIndex)
         {

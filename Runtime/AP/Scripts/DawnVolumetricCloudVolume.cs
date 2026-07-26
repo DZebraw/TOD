@@ -1,10 +1,11 @@
 using System;
+#if DAWNTOD_URP_AVAILABLE
 using UnityEngine;
 using UnityEngine.Rendering;
 
 namespace DawnTOD
 {
-#if USING_URP
+#if DAWNTOD_URP_AVAILABLE
     [VolumeComponentMenu("Dawn TOD/Volumetric Cloud")]
 #else
     [HideInInspector]
@@ -259,3 +260,4 @@ namespace DawnTOD
         }
     }
 }
+#endif
