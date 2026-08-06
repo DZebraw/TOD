@@ -13,7 +13,9 @@
 
 #define SAMPLECOUNT_DENSITY 256
 #define SAMPLECOUNT_INSCATTERING 512
-#define SAMPLECOUNT_AMBIENT 512
+#define SAMPLECOUNT_AMBIENT_RAYMARCH 64
+#define AMBIENT_GROUND_EPSILON 1.0
+#define FIBONACCI_GOLDEN_ANGLE 2.39996323
 
 // CP Particle Density
 RWTexture2D<float2> _RWintegralCPDensityLUT;
@@ -23,11 +25,11 @@ RWTexture2D<float3> _RWsunOnSurfaceLUT;
 
 // InScattering
 RWTexture2D<float3> _RWinScatteringLUT;
-Texture2D<float3> _InScatteringLUT;
 
 // Ambient
 RWTexture2D<float3> _RWambientLUT;
 float3 _AtmosphereGroundColor;
+float3 _AmbientSunDirection;
 
 //TODO Sample State
 SamplerState _trilinearClampSampler;
@@ -120,73 +122,93 @@ void CSsunOnSurface(uint3 id: SV_DispatchThreadID)
 // =================================================================================
 // PrecomputeAmbient
 // =================================================================================
-void ComputeAmbientTrilight(
-    float cosSunAngle01,
-    int count,
-    out float3 skyIrradiance,
-    out float3 equatorIrradiance,
-    out float3 groundIrradiance)
+float3 ComputeFibonacciSphereDirection(uint index, uint count)
 {
-    float3 skyTotal = 0.0;
-    float3 equatorTotal = 0.0;
-
-    // A deterministic Fibonacci sequence avoids a CPU-generated random
-    // texture and distributes samples uniformly over the upper hemisphere.
-    for (int i = 0; i < count; ++i)
-    {
-        float y = ((float)i + 0.5) / count;
-        float phi = ((float)i + 0.5) * 2.39996323;
-        float radius = sqrt(saturate(1.0 - y * y));
-        float3 viewDir = float3(
-            cos(phi) * radius,
-            y,
-            sin(phi) * radius);
-
-        // The current atmosphere LUT is rotationally symmetric around the
-        // world up axis, so radiance depends on the view elevation only.
-        float3 inScattering = _InScatteringLUT.SampleLevel(
-            _trilinearClampSampler,
-            float2(viewDir.y * 0.5 + 0.5, cosSunAngle01),
-            0);
-
-        skyTotal += viewDir.y * inScattering;
-        equatorTotal += max(viewDir.x, 0.0) * inScattering;
-    }
-
-    float integrationScale = 2.0 * PI / count;
-    skyIrradiance = skyTotal * integrationScale;
-
-    // A horizontal normal sees half sky and half ground. The sky half is
-    // integrated above; the lower quarter sphere contributes PI/2 for a
-    // uniform ground radiance.
-    equatorIrradiance = equatorTotal * integrationScale +
-        _AtmosphereGroundColor * (0.5 * PI);
-    groundIrradiance = _AtmosphereGroundColor * PI;
+    float sample01 = ((float)index + 0.5) / max((float)count, 1.0);
+    float y = 1.0 - 2.0 * sample01;
+    float phi = ((float)index + 0.5) * FIBONACCI_GOLDEN_ANGLE;
+    float radius = sqrt(saturate(1.0 - y * y));
+    return float3(cos(phi) * radius, y, sin(phi) * radius);
 }
 
-// x : sunViewAngle01
+float3 SanitizeAmbientRadiance(float3 radiance)
+{
+    radiance = float3(
+        SanitizeFinite(radiance.r),
+        SanitizeFinite(radiance.g),
+        SanitizeFinite(radiance.b));
+    return max(radiance, 0.0);
+}
+
+float3 ComputeAmbientRadiance(float3 rayDir, float3 lightDir)
+{
+    float3 planetCenter = float3(0, -_PlanetRadius, 0);
+    float3 rayStart = ClampRayOriginAboveSphere(
+        float3(0, _SurfaceHeight, 0),
+        planetCenter,
+        _PlanetRadius,
+        AMBIENT_GROUND_EPSILON);
+
+    float2 atmosphereIntersections = RaySphereIntersection(
+        rayStart,
+        rayDir,
+        planetCenter,
+        _PlanetRadius + _AtmosphereHeight);
+    float rayLength =
+        RaySphereNearestForwardIntersection(atmosphereIntersections);
+    if (!IsFinite(rayLength) || rayLength < 0.0)
+        return 0.0;
+
+    float2 groundIntersections = RaySphereIntersection(
+        rayStart,
+        rayDir,
+        planetCenter,
+        _PlanetRadius);
+    float groundDistance =
+        RaySphereNearestForwardIntersection(groundIntersections);
+    bool hitsGround =
+        IsFinite(groundDistance) &&
+        groundDistance >= 0.0 &&
+        groundDistance <= rayLength;
+    if (hitsGround)
+        rayLength = groundDistance;
+
+    float3 background = hitsGround ? _AtmosphereGroundColor : 0.0;
+    if (rayLength <= 0.0)
+        return SanitizeAmbientRadiance(background);
+
+    float3 extinction;
+    float3 inscattering = IntegrateInscattering(
+        rayStart,
+        rayDir,
+        rayLength,
+        planetCenter,
+        1,
+        lightDir,
+        SAMPLECOUNT_AMBIENT_RAYMARCH,
+        extinction);
+    return SanitizeAmbientRadiance(background * extinction + inscattering);
+}
+
 [numthreads(8, 1, 1)]
 void CSAmbient(uint3 id: SV_DispatchThreadID)
 {
     int w, h;
     _RWambientLUT.GetDimensions(w,h);
-    if (id.x >= (uint)w || h < 3)
+    if (id.x >= (uint)w || h < 1)
         return;
 
-    float cosAngle01 = ((float)id.x + 0.5) / w;
-    float3 skyIrradiance;
-    float3 equatorIrradiance;
-    float3 groundIrradiance;
-    ComputeAmbientTrilight(
-        cosAngle01,
-        SAMPLECOUNT_AMBIENT,
-        skyIrradiance,
-        equatorIrradiance,
-        groundIrradiance);
+    float lightLengthSq = dot(_AmbientSunDirection, _AmbientSunDirection);
+    if (!IsFinite(lightLengthSq) || lightLengthSq <= 0.000001)
+    {
+        _RWambientLUT[int2(id.x, 0)] = 0.0;
+        return;
+    }
 
-    _RWambientLUT[int2(id.x, 0)] = skyIrradiance;
-    _RWambientLUT[int2(id.x, 1)] = equatorIrradiance;
-    _RWambientLUT[int2(id.x, 2)] = groundIrradiance;
+    float3 lightDir = _AmbientSunDirection * rsqrt(lightLengthSq);
+    float3 rayDir = ComputeFibonacciSphereDirection(id.x, (uint)w);
+    _RWambientLUT[int2(id.x, 0)] =
+        ComputeAmbientRadiance(rayDir, lightDir);
 }
 
 

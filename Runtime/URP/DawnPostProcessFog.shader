@@ -37,11 +37,82 @@ Shader "Hidden/DawnTOD/PostProcessFog"
             float _DawnFogAffectSky;
             float _DawnFogCloudCoverageAvailable;
             TEXTURE2D_X(_DawnCloudTexture);
+            TEXTURE2D_X(_DawnCloudDistanceTexture);
 
             float FogDensityAtHeight(float height, float baseHeight, float maximumHeight)
             {
                 float inverseHeightRange = rcp(max(maximumHeight - baseHeight, 0.01));
-                return saturate((maximumHeight - height) * inverseHeightRange);
+                float normalizedDensity =
+                    (maximumHeight - height) * inverseHeightRange;
+                return smoothstep(0.0, 1.0, normalizedDensity);
+            }
+
+            float FogDensityPrimitive(
+                float height,
+                float baseHeight,
+                float maximumHeight)
+            {
+                float heightRange =
+                    max(maximumHeight - baseHeight, 0.01);
+                float clampedHeight =
+                    clamp(height, baseHeight, maximumHeight);
+                float normalizedDensity =
+                    (maximumHeight - clampedHeight) / heightRange;
+                float normalizedDensitySquared =
+                    normalizedDensity * normalizedDensity;
+                float transitionIntegral = heightRange * (
+                    0.5 -
+                    normalizedDensitySquared * normalizedDensity +
+                    0.5 * normalizedDensitySquared *
+                    normalizedDensitySquared);
+
+                // Below baseHeight the density is one; above maximumHeight
+                // the primitive remains constant because density is zero.
+                return min(height - baseHeight, 0.0) +
+                    transitionIntegral;
+            }
+
+            float FogFactorAlongRay(
+                float3 cameraPosition,
+                float3 rayDirection,
+                float fogDistance)
+            {
+                float baseHeight = _DawnFogParameters.y;
+                float maximumHeight = _DawnFogParameters.z;
+                fogDistance = max(fogDistance, 0.0);
+                float verticalDistance =
+                    rayDirection.y * fogDistance;
+                float integratedDensityDistance;
+                if (abs(verticalDistance) < 0.001)
+                {
+                    integratedDensityDistance =
+                        fogDistance * FogDensityAtHeight(
+                            cameraPosition.y,
+                            baseHeight,
+                            maximumHeight);
+                }
+                else
+                {
+                    float endHeight =
+                        cameraPosition.y + verticalDistance;
+                    float integratedHeightDensity =
+                        FogDensityPrimitive(
+                            endHeight,
+                            baseHeight,
+                            maximumHeight) -
+                        FogDensityPrimitive(
+                            cameraPosition.y,
+                            baseHeight,
+                            maximumHeight);
+                    integratedDensityDistance =
+                        fogDistance * integratedHeightDensity /
+                        verticalDistance;
+                }
+
+                float opticalDepth =
+                    max(integratedDensityDistance, 0.0) /
+                    max(_DawnFogParameters.x, 0.01);
+                return 1.0 - exp(-opticalDepth);
             }
 
             half4 Frag(Varyings input) : SV_Target
@@ -63,11 +134,9 @@ Shader "Hidden/DawnTOD/PostProcessFog"
                 bool isSky = rawDepth >= 0.9999;
                 float deviceDepth = lerp(UNITY_NEAR_CLIP_VALUE, 1.0, rawDepth);
 #endif
-                if (isSky && _DawnFogAffectSky < 0.5)
-                {
-                    return source;
-                }
 
+                float cloudOpacity = 0.0;
+                float cloudDistance = 0.0;
                 if (_DawnFogCloudCoverageAvailable > 0.5)
                 {
                     float cloudTransmittance = SAMPLE_TEXTURE2D_X_LOD(
@@ -75,13 +144,20 @@ Shader "Hidden/DawnTOD/PostProcessFog"
                         sampler_LinearClamp,
                         uv,
                         0).a;
-                    // Clouds already evaluate their own atmosphere. Fogging the
-                    // composited result with opaque depth would stamp terrain
-                    // silhouettes into the same cloud layer.
-                    if (1.0 - cloudTransmittance > 0.0025)
-                    {
-                        return source;
-                    }
+                    cloudOpacity = saturate(1.0 - cloudTransmittance);
+                    cloudDistance = max(
+                        SAMPLE_TEXTURE2D_X_LOD(
+                            _DawnCloudDistanceTexture,
+                            sampler_LinearClamp,
+                            uv,
+                            0).r,
+                        0.0);
+                }
+
+                if (isSky && _DawnFogAffectSky < 0.5 &&
+                    cloudOpacity <= 0.0025)
+                {
+                    return source;
                 }
 
                 // The pass is full-screen, but fog density is evaluated in world
@@ -99,35 +175,34 @@ Shader "Hidden/DawnTOD/PostProcessFog"
                     max(reconstructedDistance, 0.0001);
 
                 float maximumFogDistance = _DawnFogParameters.w;
-                float fogDistance = isSky
+                float sceneFogDistance = isSky
                     ? maximumFogDistance
                     : min(reconstructedDistance, maximumFogDistance);
-                float3 fogEndPosition =
-                    cameraPosition + rayDirection * fogDistance;
-                float midpointHeight =
-                    (cameraPosition.y + fogEndPosition.y) * 0.5;
+                float sceneFogFactor =
+                    isSky && _DawnFogAffectSky < 0.5
+                        ? 0.0
+                        : FogFactorAlongRay(
+                            cameraPosition,
+                            rayDirection,
+                            sceneFogDistance);
+                float fogFactor = sceneFogFactor;
 
-                float baseHeight = _DawnFogParameters.y;
-                float maximumHeight = _DawnFogParameters.z;
-                float densityAtCamera = FogDensityAtHeight(
-                    cameraPosition.y,
-                    baseHeight,
-                    maximumHeight);
-                float densityAtMidpoint = FogDensityAtHeight(
-                    midpointHeight,
-                    baseHeight,
-                    maximumHeight);
-                float densityAtEnd = FogDensityAtHeight(
-                    fogEndPosition.y,
-                    baseHeight,
-                    maximumHeight);
-
-                // Simpson integration keeps sloped camera rays stable while remaining one pass.
-                float averageDensity =
-                    (densityAtCamera + 4.0 * densityAtMidpoint + densityAtEnd) / 6.0;
-                float opticalDepth =
-                    fogDistance * averageDensity / max(_DawnFogParameters.x, 0.01);
-                float fogFactor = 1.0 - exp(-opticalDepth);
+                if (cloudOpacity > 0.0025)
+                {
+                    float cloudFogDistance =
+                        min(cloudDistance, maximumFogDistance);
+                    float cloudFogFactor = FogFactorAlongRay(
+                        cameraPosition,
+                        rayDirection,
+                        cloudFogDistance);
+                    // Dense cloud pixels use their ray-marched distance instead
+                    // of the opaque surface behind them. At soft cloud edges,
+                    // opacity blends the scene and cloud layers continuously.
+                    fogFactor = lerp(
+                        sceneFogFactor,
+                        cloudFogFactor,
+                        cloudOpacity);
+                }
 
                 source.rgb = lerp(source.rgb, _DawnFogAlbedo.rgb, saturate(fogFactor));
                 return source;

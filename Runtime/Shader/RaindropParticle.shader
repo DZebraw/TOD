@@ -150,4 +150,6 @@ Shader "TOD/RaindropParticle"
             ENDCG
         }
     }
+
+    CustomEditor "DawnTODEditor.DawnRainShaderGUI"
 }

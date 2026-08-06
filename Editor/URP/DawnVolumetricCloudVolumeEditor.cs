@@ -32,6 +32,7 @@ namespace DawnTODEditor
         private SerializedDataParameter m_RayStepExponent;
         private SerializedDataParameter m_RayStepLength;
         private SerializedDataParameter m_RayOffsetStrength;
+        private SerializedDataParameter m_TemporalAccumulation;
         private SerializedDataParameter m_Coverage;
         private SerializedDataParameter m_WeatherMapTiling;
         private SerializedDataParameter m_ShapeTiling;
@@ -50,10 +51,11 @@ namespace DawnTODEditor
         private SerializedDataParameter m_ColorB;
         private SerializedDataParameter m_ColorOffset1;
         private SerializedDataParameter m_ColorOffset2;
+        private SerializedDataParameter m_ExtinctionScale;
         private SerializedDataParameter m_LightAbsorptionTowardSun;
+        private SerializedDataParameter m_SelfShadowStrength;
         private SerializedDataParameter m_LightAbsorptionThroughCloud;
         private SerializedDataParameter m_PhaseParameters;
-        private SerializedDataParameter m_PhaseMinimum;
         private SerializedDataParameter m_PowderEffectIntensity;
         private SerializedDataParameter m_MultiScatterExtinction;
         private SerializedDataParameter m_MultiScatterContribution;
@@ -88,6 +90,8 @@ namespace DawnTODEditor
             m_RayStepExponent = Unpack(o.Find(x => x.rayStepExponent));
             m_RayStepLength = Unpack(o.Find(x => x.rayStepLength));
             m_RayOffsetStrength = Unpack(o.Find(x => x.rayOffsetStrength));
+            m_TemporalAccumulation =
+                Unpack(o.Find(x => x.temporalAccumulation));
             m_Coverage = Unpack(o.Find(x => x.coverage));
             m_WeatherMapTiling = Unpack(o.Find(x => x.weatherMapTiling));
             m_ShapeTiling = Unpack(o.Find(x => x.shapeTiling));
@@ -106,12 +110,14 @@ namespace DawnTODEditor
             m_ColorB = Unpack(o.Find(x => x.colorB));
             m_ColorOffset1 = Unpack(o.Find(x => x.colorOffset1));
             m_ColorOffset2 = Unpack(o.Find(x => x.colorOffset2));
+            m_ExtinctionScale = Unpack(o.Find(x => x.extinctionScale));
             m_LightAbsorptionTowardSun =
                 Unpack(o.Find(x => x.lightAbsorptionTowardSun));
+            m_SelfShadowStrength =
+                Unpack(o.Find(x => x.selfShadowStrength));
             m_LightAbsorptionThroughCloud =
                 Unpack(o.Find(x => x.lightAbsorptionThroughCloud));
             m_PhaseParameters = Unpack(o.Find(x => x.phaseParameters));
-            m_PhaseMinimum = Unpack(o.Find(x => x.phaseMinimum));
             m_PowderEffectIntensity =
                 Unpack(o.Find(x => x.powderEffectIntensity));
             m_MultiScatterExtinction =
@@ -162,6 +168,11 @@ namespace DawnTODEditor
             PropertyField(m_RayStepExponent);
             PropertyField(m_RayStepLength);
             PropertyField(m_RayOffsetStrength);
+            PropertyField(
+                m_TemporalAccumulation,
+                new GUIContent(
+                    "Temporal Accumulation",
+                    "Reprojects valid cloud history and rejects it at cloud-depth or opacity discontinuities."));
 
             PropertyField(
                 m_Coverage,
@@ -212,26 +223,31 @@ namespace DawnTODEditor
                     "Controls the vertical fade distance of cloud tops."));
 
             PropertyField(
+                m_ExtinctionScale,
+                new GUIContent(
+                    "Base Extinction / World Unit",
+                    "Converts normalized density and travelled world distance into optical depth. Use this as the global scale control; the sun and view values below are multipliers."));
+            PropertyField(
                 m_LightAbsorptionTowardSun,
                 new GUIContent(
-                    "Sunlight Absorption",
-                    "Extinction along the light ray toward the sun. Higher values deepen cloud self-shadowing."));
+                    "Sunlight Extinction Multiplier",
+                    "Scales extinction along the light ray toward the sun. Higher values deepen cloud self-shadowing."));
+            PropertyField(
+                m_SelfShadowStrength,
+                new GUIContent(
+                    "Sun Shadow Strength",
+                    "Scales the same sun-path extinction for cloud self-shadowing and world cloud shadows."));
             PropertyField(
                 m_LightAbsorptionThroughCloud,
                 new GUIContent(
-                    "View Extinction",
-                    "Extinction accumulated along the camera ray through the cloud."));
+                    "View Extinction Multiplier",
+                    "Scales extinction accumulated along the camera ray through the cloud."));
             DrawForwardScattering();
-            PropertyField(
-                m_PhaseMinimum,
-                new GUIContent(
-                    "Non-Sun-Facing Fill",
-                    "Minimum final sunlight response after internal-light transmission. It keeps side and back faces readable without flattening the forward lobe."));
             PropertyField(
                 m_PowderEffectIntensity,
                 new GUIContent(
                     "Silver Lining / Powder",
-                    "Blends forward Beer transmission toward a bounded Beer-Powder response and keeps the sun-facing edge stable when Bounds Height changes, without lifting opaque cloud cores elsewhere."));
+                    "Adds a bounded forward-scattering lift only to optically thin silhouettes."));
             PropertyField(
                 m_MultiScatterContribution,
                 new GUIContent(
@@ -259,7 +275,11 @@ namespace DawnTODEditor
                 DrawAdvancedLighting();
             }
 
-            PropertyField(m_SpeedWarp);
+            PropertyField(
+                m_SpeedWarp,
+                new GUIContent(
+                    "Noise Animation / Warp",
+                    "XY control shape/detail animation speed; ZW control shape/detail warp strength."));
 
             serializedObject.ApplyModifiedProperties();
         }

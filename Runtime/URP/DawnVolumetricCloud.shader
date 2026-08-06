@@ -37,12 +37,12 @@ Shader "Hidden/DawnTOD/VolumetricCloud"
         SAMPLER(sampler_DawnCloudLowDepthTexture);
         TEXTURE2D_X(_DawnCloudTexture);
         SAMPLER(sampler_DawnCloudTexture);
-        TEXTURE2D_X(_DawnCloudReferenceTexture);
-        SAMPLER(sampler_DawnCloudReferenceTexture);
-        TEXTURE2D_X(_DawnCloudSceneTexture);
-        SAMPLER(sampler_DawnCloudSceneTexture);
-        TEXTURE2D_X(_DawnCloudSkyTexture);
-        SAMPLER(sampler_DawnCloudSkyTexture);
+        TEXTURE2D_X(_DawnCloudDistanceTexture);
+        SAMPLER(sampler_DawnCloudDistanceTexture);
+        TEXTURE2D_X(_DawnCloudHistoryTexture);
+        SAMPLER(sampler_DawnCloudHistoryTexture);
+        TEXTURE2D_X(_DawnCloudHistoryDistanceTexture);
+        SAMPLER(sampler_DawnCloudHistoryDistanceTexture);
 
         float4 _DawnCloudShadowRayOrigin;
         float4 _DawnCloudShadowRight;
@@ -64,6 +64,9 @@ Shader "Hidden/DawnTOD/VolumetricCloud"
         float4 _DawnCloudHeightProfileParameters;
         float4 _DawnCloudSpeedWarp;
         float4 _DawnCloudBlueNoiseScale;
+        float4 _DawnCloudBufferSize;
+        float4 _DawnCloudPreviousCameraPosition;
+        float4x4 _DawnCloudPreviousViewProjection;
 
         float _DawnCloudCoverage;
         float _DawnCloudWeatherMapTiling;
@@ -80,12 +83,15 @@ Shader "Hidden/DawnTOD/VolumetricCloud"
         float _DawnCloudRayOffsetStrength;
         float _DawnCloudColorOffset1;
         float _DawnCloudColorOffset2;
-        float _DawnCloudPhaseMinimum;
         float _DawnCloudPowderEffectIntensity;
         float _DawnCloudAmbientOcclusionStrength;
+        float _DawnCloudExtinctionScale;
         float _DawnCloudLightAbsorptionTowardSun;
+        float _DawnCloudSelfShadowStrength;
         float _DawnCloudLightAbsorptionThroughCloud;
-        float _DawnCloudSkyCorrection;
+        float _DawnCloudHistoryValid;
+        float _DawnCloudTemporalBlend;
+        float _DawnCloudDepthDownsampleScale;
         int _DawnCloudMaxRayMarchSteps;
 
         // HanPi Volume Cloud's phi_fwd model assumes a highly reflective
@@ -93,10 +99,6 @@ Shader "Hidden/DawnTOD/VolumetricCloud"
         static const float DawnCloudDiffuseFieldAlbedo = 0.999;
         static const float DawnCloudDiffuseFieldKappaOdScale =
             0.05477225575;
-        // Keeps the historical extinction response of the default 50-unit
-        // cloud layer when a taller Bounds Size is used for scene coverage.
-        static const float DawnCloudReferenceLayerHeight = 50.0;
-
         float DawnCloudRemap(
             float value,
             float inputMinimum,
@@ -167,6 +169,14 @@ Shader "Hidden/DawnTOD/VolumetricCloud"
             return float2(entryDistance, distanceInsideBox);
         }
 
+        float DawnCloudPackedWeatherWeight(float3 weatherSample)
+        {
+            float channelDifference =
+                abs(weatherSample.g - weatherSample.r) +
+                abs(weatherSample.b - weatherSample.r);
+            return smoothstep(0.01, 0.05, channelDifference);
+        }
+
         float DawnCloudEvaluateTopHeightProxy(float2 worldPosition)
         {
             float3 boundsMinimum = _DawnCloudBoundsMin.xyz;
@@ -181,11 +191,21 @@ Shader "Hidden/DawnTOD/VolumetricCloud"
                 sampler_DawnCloudMaskNoise,
                 weatherUv + float2(shapeSpeed * 0.5, 0.0),
                 0).r;
-            float weatherValue = SAMPLE_TEXTURE2D_LOD(
+            float3 weatherSample = SAMPLE_TEXTURE2D_LOD(
                 _DawnCloudWeatherMap,
                 sampler_DawnCloudWeatherMap,
                 weatherUv + float2(shapeSpeed * 0.4, 0.0),
-                0).r;
+                0).rgb;
+            float packedWeather = DawnCloudPackedWeatherWeight(
+                weatherSample);
+            float coverageSource = lerp(
+                maskValue,
+                weatherSample.r,
+                packedWeather);
+            float cloudType = lerp(
+                weatherSample.r,
+                weatherSample.g,
+                packedWeather);
 
             float baseSoftness = clamp(
                 _DawnCloudHeightProfileParameters.x,
@@ -195,7 +215,7 @@ Shader "Hidden/DawnTOD/VolumetricCloud"
                 _DawnCloudHeightProfileParameters.y,
                 baseSoftness + 0.05,
                 0.95);
-            float growthPattern = smoothstep(0.15, 0.85, weatherValue);
+            float growthPattern = smoothstep(0.15, 0.85, cloudType);
             float localTopHeight = lerp(
                 bodyHeight,
                 1.0,
@@ -208,7 +228,7 @@ Shader "Hidden/DawnTOD/VolumetricCloud"
             float coverageMask = smoothstep(
                 coverageThreshold,
                 coverageThreshold + coverageFeather,
-                maskValue);
+                coverageSource);
             coverageMask = lerp(
                 coverageMask,
                 1.0,
@@ -272,6 +292,8 @@ Shader "Hidden/DawnTOD/VolumetricCloud"
             float coarseDensity;
             float height;
             float localHeight;
+            float cloudType;
+            float precipitation;
         };
 
         DawnCloudProperties DawnCloudEvaluatePropertiesAtLod(
@@ -283,18 +305,24 @@ Shader "Hidden/DawnTOD/VolumetricCloud"
             properties.coarseDensity = 0.0;
             properties.height = 0.0;
             properties.localHeight = 0.0;
+            properties.cloudType = 0.0;
+            properties.precipitation = 0.0;
 
             float3 boundsMinimum = _DawnCloudBoundsMin.xyz;
             float3 boundsMaximum = _DawnCloudBoundsMax.xyz;
             float3 boundsSize = max(boundsMaximum - boundsMinimum, 0.01);
             float3 boundsCenter = (boundsMinimum + boundsMaximum) * 0.5;
 
+            float heightPercent =
+                (rayPosition.y - boundsMinimum.y) /
+                max(boundsSize.y, 0.01);
+            properties.height = saturate(heightPercent);
             float shapeSpeed = _Time.y * _DawnCloudSpeedWarp.x;
             float detailSpeed = _Time.y * _DawnCloudSpeedWarp.y;
             float3 shapeUv = rayPosition * _DawnCloudShapeTiling +
-                             float3(shapeSpeed, shapeSpeed * 0.2, 0.0);
+                float3(shapeSpeed, shapeSpeed * 0.2, 0.0);
             float3 detailUv = rayPosition * _DawnCloudDetailTiling +
-                              float3(detailSpeed, detailSpeed * 0.2, 0.0);
+                float3(detailSpeed, detailSpeed * 0.2, 0.0);
             // Keep the horizontal weather pattern at a fixed world scale.
             // Bounds expansion should reveal more clouds, not resize them.
             float2 weatherUv =
@@ -306,11 +334,24 @@ Shader "Hidden/DawnTOD/VolumetricCloud"
                 sampler_DawnCloudMaskNoise,
                 weatherUv + float2(shapeSpeed * 0.5, 0.0),
                 0).r;
-            float weatherValue = SAMPLE_TEXTURE2D_LOD(
+            float3 weatherSample = SAMPLE_TEXTURE2D_LOD(
                 _DawnCloudWeatherMap,
                 sampler_DawnCloudWeatherMap,
                 weatherUv + float2(shapeSpeed * 0.4, 0.0),
-                0).r;
+                0).rgb;
+            float packedWeather = DawnCloudPackedWeatherWeight(
+                weatherSample);
+            float coverageSource = lerp(
+                maskValue,
+                weatherSample.r,
+                packedWeather);
+            float weatherValue = lerp(
+                weatherSample.r,
+                weatherSample.g,
+                packedWeather);
+            float precipitation = weatherSample.b * packedWeather;
+            properties.cloudType = saturate(weatherValue);
+            properties.precipitation = saturate(precipitation);
             float4 shapeNoise = SAMPLE_TEXTURE3D_LOD(
                 _DawnCloudShapeNoise,
                 sampler_DawnCloudShapeNoise,
@@ -320,15 +361,22 @@ Shader "Hidden/DawnTOD/VolumetricCloud"
                 _DawnCloudDetailNoise,
                 sampler_DawnCloudDetailNoise,
                 detailUv + shapeNoise.r * _DawnCloudSpeedWarp.w * 0.1,
-                0);
+                max(shapeNoiseLod - 0.5, 0.0));
 
+            float edgeFadeDistance = clamp(
+                min(boundsSize.x, boundsSize.z) * 0.05,
+                10.0,
+                500.0);
             float edgeDistanceX = min(
-                10.0,
-                min(rayPosition.x - boundsMinimum.x, boundsMaximum.x - rayPosition.x));
+                rayPosition.x - boundsMinimum.x,
+                boundsMaximum.x - rayPosition.x);
             float edgeDistanceZ = min(
-                10.0,
-                min(rayPosition.z - boundsMinimum.z, boundsMaximum.z - rayPosition.z));
-            float edgeWeight = saturate(min(edgeDistanceX, edgeDistanceZ) / 10.0);
+                rayPosition.z - boundsMinimum.z,
+                boundsMaximum.z - rayPosition.z);
+            float edgeWeight = smoothstep(
+                0.0,
+                edgeFadeDistance,
+                min(edgeDistanceX, edgeDistanceZ));
 
             float gradientMinimum = DawnCloudRemap(weatherValue, 0.0, 1.0, 0.1, 0.6);
             float gradientMaximum = DawnCloudRemap(
@@ -337,9 +385,6 @@ Shader "Hidden/DawnTOD/VolumetricCloud"
                 1.0,
                 gradientMinimum,
                 0.9);
-            float heightPercent =
-                (rayPosition.y - boundsMinimum.y) / max(boundsSize.y, 0.01);
-            properties.height = saturate(heightPercent);
             float standardHeightGradient =
                 saturate(DawnCloudRemap(heightPercent, 0.0, gradientMinimum, 0.0, 1.0)) *
                 saturate(DawnCloudRemap(heightPercent, 1.0, gradientMaximum, 0.0, 1.0));
@@ -365,7 +410,10 @@ Shader "Hidden/DawnTOD/VolumetricCloud"
                 _DawnCloudHeightProfileParameters.w,
                 0.02,
                 0.5);
-            float growthPattern = smoothstep(0.15, 0.85, weatherValue);
+            float growthPattern = smoothstep(
+                0.15,
+                0.85,
+                properties.cloudType);
             float localTopHeight = lerp(
                 bodyHeight,
                 1.0,
@@ -395,7 +443,7 @@ Shader "Hidden/DawnTOD/VolumetricCloud"
             float coverageMask = smoothstep(
                 coverageThreshold,
                 coverageThreshold + coverageFeather,
-                maskValue);
+                coverageSource);
             coverageMask = lerp(
                 coverageMask,
                 1.0,
@@ -409,7 +457,13 @@ Shader "Hidden/DawnTOD/VolumetricCloud"
             float shapeFbm = dot(shapeNoise, normalizedShapeWeights) *
                              heightGradient;
             float baseShapeDensity =
-                (shapeFbm + _DawnCloudDensityOffset * 0.01) * coverageMask;
+                (shapeFbm + _DawnCloudDensityOffset * 0.01) *
+                coverageMask;
+            float precipitationBody =
+                properties.precipitation *
+                (1.0 - smoothstep(0.45, 1.0, properties.localHeight));
+            baseShapeDensity +=
+                precipitationBody * heightGradient * coverageMask * 0.08;
             if (baseShapeDensity <= 0.0)
             {
                 return properties;
@@ -419,8 +473,21 @@ Shader "Hidden/DawnTOD/VolumetricCloud"
             float inverseShapeDensity = 1.0 - baseShapeDensity;
             float detailErodeWeight = inverseShapeDensity * inverseShapeDensity *
                                       inverseShapeDensity;
+            float heightErosion = lerp(
+                0.35,
+                1.15,
+                smoothstep(0.08, 1.0, properties.localHeight));
+            float typeErosion = lerp(
+                0.65,
+                1.1,
+                properties.cloudType);
+            float precipitationErosion = lerp(
+                1.0,
+                0.55,
+                precipitationBody);
             float cloudDensity = baseShapeDensity - detailFbm * detailErodeWeight *
-                                 _DawnCloudDetailNoiseWeight;
+                _DawnCloudDetailNoiseWeight * heightErosion *
+                typeErosion * precipitationErosion;
             properties.coarseDensity = saturate(
                 baseShapeDensity * _DawnCloudDensityMultiplier);
             properties.density = saturate(
@@ -473,17 +540,34 @@ Shader "Hidden/DawnTOD/VolumetricCloud"
             float cosineAngle)
         {
             float beerTransmittance = saturate(directTransmittance);
-            // Beer-Powder preserves clear and opaque limits while lifting the
-            // medium optical depths that form a forward-scattering silver edge.
-            float beerPowderTransmittance =
-                2.0 * beerTransmittance *
-                (1.0 - beerTransmittance * beerTransmittance);
-            float forwardWeight = smoothstep(0.0, 1.0, cosineAngle);
+            float opacity = 1.0 - beerTransmittance;
+            // Restrict powder to forward-lit, optically thin silhouettes. It
+            // must not lift opaque cores or turn an entire sun-facing side white.
+            float thinShellWeight =
+                smoothstep(0.04, 0.25, opacity) *
+                (1.0 - smoothstep(0.55, 0.9, opacity));
+            float forwardWeight = smoothstep(0.55, 0.95, cosineAngle);
+            float powderTransmittance = saturate(
+                beerTransmittance +
+                opacity * thinShellWeight * 0.35);
             return lerp(
                 beerTransmittance,
-                max(beerTransmittance, beerPowderTransmittance),
+                powderTransmittance,
                 forwardWeight *
                 saturate(_DawnCloudPowderEffectIntensity));
+        }
+
+        float DawnCloudSunExtinction()
+        {
+            return max(_DawnCloudExtinctionScale, 0.0001) *
+                max(_DawnCloudLightAbsorptionTowardSun, 0.0) *
+                saturate(_DawnCloudSelfShadowStrength);
+        }
+
+        float DawnCloudViewExtinction()
+        {
+            return max(_DawnCloudExtinctionScale, 0.0001) *
+                max(_DawnCloudLightAbsorptionThroughCloud, 0.05);
         }
 
         DawnCloudLightResult DawnCloudLightMarch(
@@ -498,23 +582,11 @@ Shader "Hidden/DawnTOD/VolumetricCloud"
                 _DawnCloudBoundsMax.xyz,
                 position,
                 lightDirection).y;
-            float cloudLayerHeight = max(
-                _DawnCloudBoundsMax.y - _DawnCloudBoundsMin.y,
-                0.0001);
             const int maximumLightStepCount = 16;
-            const float lightConeRatio = 2.0;
-            const float minimumLightStepSize = 5.0;
             const float maximumLightMarchDistance = 6000.0;
             float lightMarchDistance = min(
                 distanceInsideBox,
                 maximumLightMarchDistance);
-            // Keep the complete cone schedule independent of the AABB exit
-            // distance. A data-dependent integer step count repositions every
-            // sample when it changes and exposes those thresholds as planar
-            // lighting seams. The final segment below is truncated smoothly,
-            // so entering another cone step starts with zero contribution.
-            float currentLightStepSize = minimumLightStepSize;
-            float lightDistanceTravelled = 0.0;
             float opticalDepth = 0.0;
             float diffuseOpticalDepth = 0.0;
             float diffuseKappaOpticalDepth = 0.0;
@@ -557,26 +629,29 @@ Shader "Hidden/DawnTOD/VolumetricCloud"
                  stepIndex < maximumLightStepCount;
                  stepIndex++)
             {
-                if (lightDistanceTravelled >= lightMarchDistance)
-                {
-                    break;
-                }
-
-                float stepSize = min(
-                    currentLightStepSize,
-                    lightMarchDistance - lightDistanceTravelled);
+                float normalizedStart =
+                    (float)stepIndex / maximumLightStepCount;
+                float normalizedEnd =
+                    (float)(stepIndex + 1) / maximumLightStepCount;
+                // Quadratic segments retain fine samples near the shaded point
+                // without the 5/10/20/... jumps that skipped thin blockers.
+                float segmentStart =
+                    lightMarchDistance * normalizedStart * normalizedStart;
+                float segmentEnd =
+                    lightMarchDistance * normalizedEnd * normalizedEnd;
+                float stepSize = segmentEnd - segmentStart;
                 if (stepSize <= 0.0001)
                 {
                     break;
                 }
 
-                float sourceDistance =
-                    lightDistanceTravelled + stepSize * 0.5;
+                float sourceDistance = (segmentStart + segmentEnd) * 0.5;
                 float3 samplePosition =
                     position + lightDirection * sourceDistance;
-                float lightNoiseLod = saturate(
-                    sourceDistance /
-                    max(lightMarchDistance, 0.0001)) * 3.0;
+                float lightNoiseLod = clamp(
+                    log2(max(stepSize / 5.0, 1.0)),
+                    0.0,
+                    3.0);
                 float density = max(
                     0.0,
                     DawnCloudSampleDensity(
@@ -622,30 +697,25 @@ Shader "Hidden/DawnTOD/VolumetricCloud"
                     diffuseOpticalDepth += localOpticalDepth;
                     diffuseKappaOpticalDepth += kappaStep;
                 }
-                lightDistanceTravelled += stepSize;
-                currentLightStepSize *= lightConeRatio;
             }
 
-            // A taller Bounds Height should not silently multiply solar
-            // extinction. Normalize tall layers to the historical 50-unit
-            // scale, and use the same depth for direct light, internal light,
-            // and ambient occlusion so those paths cannot disagree.
-            float solarOpticalDepthScale = min(
-                1.0,
-                DawnCloudReferenceLayerHeight / cloudLayerHeight);
-            float solarOpticalDepth =
-                opticalDepth * solarOpticalDepthScale;
+            // Density integrates over travelled world distance; the explicit
+            // extinction scale below converts that integral into optical depth.
+            // Bounds Size therefore changes path length without silently
+            // retuning the medium to a historical 50-unit layer.
+            float solarOpticalDepth = opticalDepth;
+            float sunExtinction = DawnCloudSunExtinction();
             float directOpticalDepth = solarOpticalDepth;
             float directTransmittance = exp(
                 -directOpticalDepth *
-                _DawnCloudLightAbsorptionTowardSun);
+                sunExtinction);
             directTransmittance = DawnCloudPowderTransmittance(
                 directTransmittance,
                 cosineAngle);
             float internalOpticalDepth = solarOpticalDepth;
             float multipleTransmittance = exp(
                 -internalOpticalDepth *
-                _DawnCloudLightAbsorptionTowardSun *
+                sunExtinction *
                 clamp(_DawnCloudMultiScatterParameters.x, 0.05, 1.0));
 
             DawnCloudLightResult result;
@@ -692,7 +762,7 @@ Shader "Hidden/DawnTOD/VolumetricCloud"
             // using the same long tangent ray to black out every ambient direction.
             float directOcclusion = 1.0 - exp(
                 -max(lightOpticalDepth, 0.0) *
-                max(_DawnCloudLightAbsorptionTowardSun, 0.0));
+                DawnCloudSunExtinction());
             float relativeFinalDensity = saturate(
                 properties.density /
                 max(_DawnCloudDensityMultiplier, 0.0001));
@@ -711,8 +781,14 @@ Shader "Hidden/DawnTOD/VolumetricCloud"
                 ambientOcclusion *
                 saturate(_DawnCloudAmbientOcclusionStrength));
             float groundVisibility = 1.0 - properties.height;
-            return upperHemisphere * upwardVisibility +
-                   _DawnCloudAmbientGroundColor.rgb * groundVisibility;
+            float precipitationDimming = lerp(
+                1.0,
+                0.55,
+                properties.precipitation * groundVisibility);
+            return (
+                upperHemisphere * upwardVisibility +
+                _DawnCloudAmbientGroundColor.rgb * groundVisibility) *
+                precipitationDimming;
         }
 
         float DawnCloudToDeviceDepth(float rawDepth)
@@ -728,16 +804,31 @@ Shader "Hidden/DawnTOD/VolumetricCloud"
         {
             UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(input);
 
-            float2 texelSize = 0.5 * rcp(max(_ScaledScreenParams.xy, 1.0));
+            float2 texelSize =
+                0.5 * max(_DawnCloudDepthDownsampleScale, 1.0) *
+                rcp(max(_ScaledScreenParams.xy, 1.0));
             float2 uv = input.texcoord;
+            float depthCenter = SampleSceneDepth(uv);
             float depth0 = SampleSceneDepth(uv + texelSize * float2(-1.0, -1.0));
             float depth1 = SampleSceneDepth(uv + texelSize * float2(-1.0, 1.0));
             float depth2 = SampleSceneDepth(uv + texelSize * float2(1.0, -1.0));
             float depth3 = SampleSceneDepth(uv + texelSize * float2(1.0, 1.0));
+            float depth4 = SampleSceneDepth(uv + texelSize * float2(-1.0, 0.0));
+            float depth5 = SampleSceneDepth(uv + texelSize * float2(1.0, 0.0));
+            float depth6 = SampleSceneDepth(uv + texelSize * float2(0.0, -1.0));
+            float depth7 = SampleSceneDepth(uv + texelSize * float2(0.0, 1.0));
 #if UNITY_REVERSED_Z
-            float conservativeDepth = max(depth0, max(depth1, max(depth2, depth3)));
+            float conservativeDepth = max(
+                depthCenter,
+                max(
+                    max(depth0, max(depth1, max(depth2, depth3))),
+                    max(depth4, max(depth5, max(depth6, depth7)))));
 #else
-            float conservativeDepth = min(depth0, min(depth1, min(depth2, depth3)));
+            float conservativeDepth = min(
+                depthCenter,
+                min(
+                    min(depth0, min(depth1, min(depth2, depth3))),
+                    min(depth4, min(depth5, min(depth6, depth7)))));
 #endif
             return float4(
                 conservativeDepth,
@@ -749,7 +840,7 @@ Shader "Hidden/DawnTOD/VolumetricCloud"
         struct DawnCloudRayMarchOutput
         {
             float4 visibleCloud : SV_Target0;
-            float4 referenceCloud : SV_Target1;
+            float cloudDistance : SV_Target1;
         };
 
         DawnCloudRayMarchOutput FragRayMarchCloud(Varyings input)
@@ -781,7 +872,6 @@ Shader "Hidden/DawnTOD/VolumetricCloud"
                 sceneDistance - distanceToBox,
                 0.0,
                 distanceInsideBox);
-            float referenceDistance = max(distanceInsideBox, 0.0);
 
             float blueNoise = SAMPLE_TEXTURE2D_LOD(
                 _DawnCloudBlueNoise,
@@ -799,30 +889,27 @@ Shader "Hidden/DawnTOD/VolumetricCloud"
                 saturate(_DawnCloudMultiScatterParameters.z));
             float baseStepSize = exp(_DawnCloudRayStepExponent) *
                                  max(_DawnCloudRayStepLength, 0.00001);
-            float adaptiveStepSize = referenceDistance /
+            float adaptiveStepSize = visibleDistance /
                 max((float)_DawnCloudMaxRayMarchSteps, 1.0);
             float stepSize = max(baseStepSize, adaptiveStepSize);
             float distanceTravelled = blueNoise * _DawnCloudRayOffsetStrength;
-            float viewAbsorption = max(
-                _DawnCloudLightAbsorptionThroughCloud,
-                0.05);
+            float viewAbsorption = DawnCloudViewExtinction();
             float visibleTransmittance = 1.0;
-            float referenceTransmittance = 1.0;
             float3 visibleLightEnergy = 0.0;
-            float3 referenceLightEnergy = 0.0;
+            float visibleDistanceWeightedOpacity = 0.0;
 
             [loop]
             for (int stepIndex = 0; stepIndex < 512; stepIndex++)
             {
                 if (stepIndex >= _DawnCloudMaxRayMarchSteps ||
-                    distanceTravelled >= referenceDistance)
+                    distanceTravelled >= visibleDistance)
                 {
                     break;
                 }
 
                 float sampleStepSize = min(
                     stepSize,
-                    referenceDistance - distanceTravelled);
+                    visibleDistance - distanceTravelled);
                 float3 rayPosition = cameraPosition +
                                      viewDirection * (distanceToBox + distanceTravelled);
                 DawnCloudProperties cloudProperties =
@@ -840,12 +927,6 @@ Shader "Hidden/DawnTOD/VolumetricCloud"
                         lightResult.direct * directPhase +
                         lightResult.multiple * multiplePhase *
                         saturate(_DawnCloudMultiScatterParameters.y);
-                    float3 minimumSolarFill =
-                        lightResult.multiple *
-                        saturate(_DawnCloudPhaseMinimum);
-                    incidentLight = max(
-                        incidentLight,
-                        minimumSolarFill);
                     incidentLight += DawnCloudEnvironmentLight(
                         cloudProperties,
                         lightResult.opticalDepth);
@@ -854,31 +935,7 @@ Shader "Hidden/DawnTOD/VolumetricCloud"
                             lightResult.diffuseField) *
                         mainLight.color;
 
-                    float referenceOpticalDepth =
-                        cloudProperties.density * sampleStepSize;
-                    float referenceStepTransmittance = exp(
-                        -referenceOpticalDepth * viewAbsorption);
-                    float referenceScatteringWeight =
-                        viewAbsorption > 0.00001
-                            ? (1.0 - referenceStepTransmittance) /
-                              viewAbsorption
-                            : referenceOpticalDepth;
-                    referenceLightEnergy +=
-                        referenceScatteringWeight *
-                        referenceTransmittance *
-                        incidentLight;
-                    referenceLightEnergy +=
-                        (1.0 - referenceStepTransmittance) *
-                        referenceTransmittance *
-                        diffuseFieldLight;
-                    referenceTransmittance *=
-                        referenceStepTransmittance;
-
-                    float visibleStepSize = min(
-                        sampleStepSize,
-                        max(
-                            visibleDistance - distanceTravelled,
-                            0.0));
+                    float visibleStepSize = sampleStepSize;
                     if (visibleStepSize > 0.0 &&
                         visibleTransmittance >= 0.01)
                     {
@@ -886,11 +943,10 @@ Shader "Hidden/DawnTOD/VolumetricCloud"
                             cloudProperties.density * visibleStepSize;
                         float visibleStepTransmittance = exp(
                             -visibleOpticalDepth * viewAbsorption);
+                        // Unit-albedo volume integration: scattered energy is
+                        // bounded by the energy removed from the view ray.
                         float visibleScatteringWeight =
-                            viewAbsorption > 0.00001
-                                ? (1.0 - visibleStepTransmittance) /
-                                  viewAbsorption
-                                : visibleOpticalDepth;
+                            1.0 - visibleStepTransmittance;
                         visibleLightEnergy +=
                             visibleScatteringWeight *
                             visibleTransmittance *
@@ -899,11 +955,21 @@ Shader "Hidden/DawnTOD/VolumetricCloud"
                             (1.0 - visibleStepTransmittance) *
                             visibleTransmittance *
                             diffuseFieldLight;
+                        float visibleOpacityContribution =
+                            (1.0 - visibleStepTransmittance) *
+                            visibleTransmittance;
+                        float visibleSampleDistance =
+                            distanceToBox +
+                            distanceTravelled +
+                            visibleStepSize * 0.5;
+                        visibleDistanceWeightedOpacity +=
+                            visibleOpacityContribution *
+                            max(visibleSampleDistance, 0.0);
                         visibleTransmittance *=
                             visibleStepTransmittance;
                     }
 
-                    if (referenceTransmittance < 0.01)
+                    if (visibleTransmittance < 0.01)
                     {
                         break;
                     }
@@ -916,90 +982,269 @@ Shader "Hidden/DawnTOD/VolumetricCloud"
             output.visibleCloud = float4(
                 visibleLightEnergy,
                 saturate(visibleTransmittance));
-            output.referenceCloud = float4(
-                referenceLightEnergy,
-                saturate(referenceTransmittance));
+            output.cloudDistance =
+                visibleDistanceWeightedOpacity /
+                max(1.0 - visibleTransmittance, 0.00001);
             return output;
+        }
+
+        struct DawnCloudReconstructionOutput
+        {
+            float4 cloud : SV_Target0;
+            float cloudDistance : SV_Target1;
+        };
+
+        float3 DawnCloudViewDirection(float2 uv)
+        {
+#if UNITY_REVERSED_Z
+            const float farRawDepth = 0.0;
+#else
+            const float farRawDepth = 1.0;
+#endif
+            float3 farWorldPosition = ComputeWorldSpacePosition(
+                uv,
+                DawnCloudToDeviceDepth(farRawDepth),
+                UNITY_MATRIX_I_VP);
+            return normalize(farWorldPosition - _WorldSpaceCameraPos);
+        }
+
+        DawnCloudReconstructionOutput FragTemporalResolve(Varyings input)
+        {
+            UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(input);
+
+            float2 uv = input.texcoord;
+            float4 currentCloud = SAMPLE_TEXTURE2D_X_LOD(
+                _DawnCloudTexture,
+                sampler_DawnCloudTexture,
+                uv,
+                0);
+            float currentDistance = max(
+                SAMPLE_TEXTURE2D_X_LOD(
+                    _DawnCloudDistanceTexture,
+                    sampler_DawnCloudDistanceTexture,
+                    uv,
+                    0).r,
+                0.0);
+
+            DawnCloudReconstructionOutput output;
+            output.cloud = currentCloud;
+            output.cloudDistance = currentDistance;
+            float currentOpacity = 1.0 - currentCloud.a;
+            if (_DawnCloudHistoryValid < 0.5 ||
+                currentOpacity <= 0.0025 ||
+                currentDistance <= 0.0)
+            {
+                return output;
+            }
+
+            float3 currentWorldPosition =
+                _WorldSpaceCameraPos +
+                DawnCloudViewDirection(uv) * currentDistance;
+            float4 previousClip = mul(
+                _DawnCloudPreviousViewProjection,
+                float4(currentWorldPosition, 1.0));
+            if (previousClip.w <= 0.0001)
+            {
+                return output;
+            }
+
+            float2 previousUv =
+                previousClip.xy / previousClip.w * 0.5 + 0.5;
+#if UNITY_UV_STARTS_AT_TOP
+            previousUv.y = 1.0 - previousUv.y;
+#endif
+            if (any(previousUv <= 0.0) || any(previousUv >= 1.0))
+            {
+                return output;
+            }
+
+            float4 historyCloud = SAMPLE_TEXTURE2D_X_LOD(
+                _DawnCloudHistoryTexture,
+                sampler_DawnCloudHistoryTexture,
+                previousUv,
+                0);
+            float historyDistance = max(
+                SAMPLE_TEXTURE2D_X_LOD(
+                    _DawnCloudHistoryDistanceTexture,
+                    sampler_DawnCloudHistoryDistanceTexture,
+                    previousUv,
+                    0).r,
+                0.0);
+            float expectedHistoryDistance = distance(
+                currentWorldPosition,
+                _DawnCloudPreviousCameraPosition.xyz);
+            float distanceTolerance = max(
+                20.0,
+                expectedHistoryDistance * 0.06);
+            float distanceConfidence = 1.0 - smoothstep(
+                distanceTolerance,
+                distanceTolerance * 2.0,
+                abs(historyDistance - expectedHistoryDistance));
+            float opacityDifference = abs(
+                (1.0 - historyCloud.a) - currentOpacity);
+            float opacityConfidence = 1.0 - smoothstep(
+                0.12,
+                0.35,
+                opacityDifference);
+
+            float4 neighborhoodMinimum = currentCloud;
+            float4 neighborhoodMaximum = currentCloud;
+            [unroll]
+            for (int y = -1; y <= 1; y++)
+            {
+                [unroll]
+                for (int x = -1; x <= 1; x++)
+                {
+                    float4 neighbor = SAMPLE_TEXTURE2D_X_LOD(
+                        _DawnCloudTexture,
+                        sampler_DawnCloudTexture,
+                        uv + float2(x, y) * _DawnCloudBufferSize.zw,
+                        0);
+                    neighborhoodMinimum = min(
+                        neighborhoodMinimum,
+                        neighbor);
+                    neighborhoodMaximum = max(
+                        neighborhoodMaximum,
+                        neighbor);
+                }
+            }
+            historyCloud = clamp(
+                historyCloud,
+                neighborhoodMinimum,
+                neighborhoodMaximum);
+            float historyWeight =
+                saturate(_DawnCloudTemporalBlend) *
+                distanceConfidence * opacityConfidence *
+                smoothstep(0.0025, 0.05, currentOpacity);
+            output.cloud = lerp(
+                currentCloud,
+                historyCloud,
+                historyWeight);
+            return output;
+        }
+
+        bool DawnCloudIsSkyDepth(float rawDepth)
+        {
+#if UNITY_REVERSED_Z
+            return rawDepth <= 0.0001;
+#else
+            return rawDepth >= 0.9999;
+#endif
+        }
+
+        DawnCloudReconstructionOutput DawnCloudDepthAwareUpsample(float2 uv)
+        {
+            float fullRawDepth = SampleSceneDepth(uv);
+            bool fullIsSky = DawnCloudIsSkyDepth(fullRawDepth);
+            float fullLinearDepth = LinearEyeDepth(
+                fullRawDepth,
+                _ZBufferParams);
+            float3 fullWorldPosition = ComputeWorldSpacePosition(
+                uv,
+                DawnCloudToDeviceDepth(fullRawDepth),
+                UNITY_MATRIX_I_VP);
+            float fullSceneDistance = distance(
+                fullWorldPosition,
+                _WorldSpaceCameraPos);
+
+            float2 lowPixel = uv * _DawnCloudBufferSize.xy - 0.5;
+            float2 basePixel = floor(lowPixel);
+            float2 fraction = frac(lowPixel);
+            float4 cloudSum = 0.0;
+            float weightSum = 0.0;
+            float distanceSum = 0.0;
+            float distanceWeightSum = 0.0;
+
+            [unroll]
+            for (int sampleIndex = 0; sampleIndex < 4; sampleIndex++)
+            {
+                float2 offset = float2(
+                    sampleIndex & 1,
+                    sampleIndex >> 1);
+                float2 sampleUv =
+                    (basePixel + offset + 0.5) *
+                    _DawnCloudBufferSize.zw;
+                float2 axisWeight = 1.0 - abs(offset - fraction);
+                float spatialWeight = axisWeight.x * axisWeight.y;
+                float4 sampleCloud = SAMPLE_TEXTURE2D_X_LOD(
+                    _DawnCloudTexture,
+                    sampler_DawnCloudTexture,
+                    sampleUv,
+                    0);
+                float sampleDistance = max(
+                    SAMPLE_TEXTURE2D_X_LOD(
+                        _DawnCloudDistanceTexture,
+                        sampler_DawnCloudDistanceTexture,
+                        sampleUv,
+                        0).r,
+                    0.0);
+                float sampleRawDepth = SAMPLE_TEXTURE2D_X_LOD(
+                    _DawnCloudLowDepthTexture,
+                    sampler_DawnCloudLowDepthTexture,
+                    sampleUv,
+                    0).r;
+                bool sampleIsSky = DawnCloudIsSkyDepth(sampleRawDepth);
+                float sampleLinearDepth = LinearEyeDepth(
+                    sampleRawDepth,
+                    _ZBufferParams);
+                float depthTolerance = max(
+                    1.0,
+                    fullLinearDepth * 0.02);
+                float depthWeight = fullIsSky == sampleIsSky
+                    ? exp2(
+                        -abs(sampleLinearDepth - fullLinearDepth) /
+                        depthTolerance)
+                    : 0.0;
+                float sampleOpacity = 1.0 - sampleCloud.a;
+                float cloudInFront = sampleDistance > 0.0
+                    ? 1.0 - smoothstep(
+                        fullSceneDistance + depthTolerance,
+                        fullSceneDistance + depthTolerance * 2.0,
+                        sampleDistance)
+                    : 0.0;
+                // A sky neighbor is still valid over an opaque full-res pixel
+                // when its cloud sample is genuinely in front of that surface.
+                depthWeight = max(
+                    depthWeight,
+                    cloudInFront * smoothstep(0.001, 0.02, sampleOpacity));
+                float sampleWeight = spatialWeight * depthWeight;
+                cloudSum += sampleCloud * sampleWeight;
+                weightSum += sampleWeight;
+                float opacityWeight =
+                    sampleWeight * max(sampleOpacity, 0.0);
+                distanceSum += sampleDistance * opacityWeight;
+                distanceWeightSum += opacityWeight;
+            }
+
+            DawnCloudReconstructionOutput output;
+            if (weightSum > 0.0001)
+            {
+                output.cloud = cloudSum / weightSum;
+                output.cloudDistance = distanceSum /
+                    max(distanceWeightSum, 0.0001);
+            }
+            else
+            {
+                output.cloud = float4(0.0, 0.0, 0.0, 1.0);
+                output.cloudDistance = 0.0;
+            }
+            return output;
+        }
+
+        DawnCloudReconstructionOutput FragDepthAwareUpsample(Varyings input)
+        {
+            UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(input);
+            return DawnCloudDepthAwareUpsample(input.texcoord);
         }
 
         float4 FragComposite(Varyings input) : SV_Target
         {
             UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(input);
-            float4 cloud = SAMPLE_TEXTURE2D_X_LOD(
+            return SAMPLE_TEXTURE2D_X_LOD(
                 _DawnCloudTexture,
                 sampler_DawnCloudTexture,
                 input.texcoord,
                 0);
-            float4 referenceCloud = SAMPLE_TEXTURE2D_X_LOD(
-                _DawnCloudReferenceTexture,
-                sampler_DawnCloudReferenceTexture,
-                input.texcoord,
-                0);
-            float cloudOpacity = 1.0 - cloud.a;
-            float referenceOpacity = 1.0 - referenceCloud.a;
-            if (referenceOpacity > 0.0001)
-            {
-                cloud.rgb =
-                    referenceCloud.rgb *
-                    (cloudOpacity / referenceOpacity);
-            }
-            float3 sceneColor = SAMPLE_TEXTURE2D_X_LOD(
-                _DawnCloudSceneTexture,
-                sampler_DawnCloudSceneTexture,
-                input.texcoord,
-                0).rgb;
-            float3 unobstructedSky = SAMPLE_TEXTURE2D_X_LOD(
-                _DawnCloudSkyTexture,
-                sampler_DawnCloudSkyTexture,
-                input.texcoord,
-                0).rgb;
-            // Visible clouds inherit the atmosphere behind them, not the hue of
-            // an opaque object farther along the same camera ray. The ramp keeps
-            // truly clear pixels bit-for-bit on the original scene.
-            float skyMix = saturate(
-                cloudOpacity * _DawnCloudSkyCorrection);
-            float3 luminanceWeights =
-                float3(0.2126, 0.7152, 0.0722);
-            float skyLuminance = dot(
-                unobstructedSky,
-                luminanceWeights);
-            float cloudLuminance = dot(
-                cloud.rgb,
-                luminanceWeights);
-            float3 atmosphericChroma = clamp(
-                unobstructedSky / max(skyLuminance, 0.0001),
-                0.25,
-                4.0);
-            Light mainLight = GetMainLight();
-            float mainLightLuminance = dot(
-                mainLight.color,
-                luminanceWeights);
-            float3 mainLightChroma = clamp(
-                mainLight.color / max(mainLightLuminance, 0.0001),
-                0.25,
-                4.0);
-            atmosphericChroma = lerp(
-                mainLightChroma,
-                atmosphericChroma,
-                saturate(skyLuminance * 16.0));
-            cloud.rgb = lerp(
-                cloud.rgb,
-                atmosphericChroma * cloudLuminance,
-                skyMix * 0.35);
-            float rawSceneDepth = SampleSceneDepth(input.texcoord);
-#if UNITY_REVERSED_Z
-            float opaqueBackground = step(0.0001, rawSceneDepth);
-#else
-            float opaqueBackground =
-                1.0 - step(0.9999, rawSceneDepth);
-#endif
-            // The scene/sky delta corrects opaque geometry only. Applying it
-            // to sky pixels subtracts the full-resolution sun from a separate
-            // low-resolution sky render and creates a dark semitransparent rim.
-            cloud.rgb +=
-                (unobstructedSky - sceneColor) *
-                (cloud.a * skyMix * opaqueBackground);
-            return cloud;
         }
 
         float FragCloudShadow(Varyings input) : SV_Target
@@ -1024,11 +1269,15 @@ Shader "Hidden/DawnTOD/VolumetricCloud"
                 return 1.0;
             }
 
-            const int shadowStepCount = 32;
+            const int shadowStepCount = 48;
             float stepLength = distanceInsideBox / shadowStepCount;
             float3 samplePosition = rayOrigin + lightDirection *
                 (boxDistance.x + stepLength * 0.5);
             float opticalDepth = 0.0;
+            float shadowNoiseLod = clamp(
+                log2(max(stepLength / 5.0, 1.0)),
+                0.0,
+                3.0);
 
             [loop]
             for (int stepIndex = 0;
@@ -1036,12 +1285,14 @@ Shader "Hidden/DawnTOD/VolumetricCloud"
                  stepIndex++)
             {
                 opticalDepth +=
-                    DawnCloudSampleDensity(samplePosition) * stepLength;
+                    DawnCloudSampleDensity(
+                        samplePosition,
+                        shadowNoiseLod) * stepLength;
                 samplePosition += lightDirection * stepLength;
             }
 
             return saturate(exp(
-                -opticalDepth * _DawnCloudLightAbsorptionTowardSun));
+                -opticalDepth * DawnCloudSunExtinction()));
         }
         ENDHLSL
 
@@ -1097,6 +1348,32 @@ Shader "Hidden/DawnTOD/VolumetricCloud"
             HLSLPROGRAM
             #pragma vertex Vert
             #pragma fragment FragCloudShadow
+            ENDHLSL
+        }
+
+        Pass
+        {
+            Name "Dawn TOD Cloud Temporal Resolve"
+            ZTest Always
+            ZWrite Off
+            Cull Off
+
+            HLSLPROGRAM
+            #pragma vertex Vert
+            #pragma fragment FragTemporalResolve
+            ENDHLSL
+        }
+
+        Pass
+        {
+            Name "Dawn TOD Cloud Depth-Aware Upsample"
+            ZTest Always
+            ZWrite Off
+            Cull Off
+
+            HLSLPROGRAM
+            #pragma vertex Vert
+            #pragma fragment FragDepthAwareUpsample
             ENDHLSL
         }
     }

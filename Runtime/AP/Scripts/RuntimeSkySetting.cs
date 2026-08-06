@@ -1,6 +1,7 @@
 ﻿using System;
 #if DAWNTOD_URP_AVAILABLE
 using System.Linq;
+using Unity.Collections;
 using UnityEngine;
 
 using UnityEngine.Rendering;
@@ -11,10 +12,16 @@ namespace DawnTOD
 
     {
         private const float SpaceEmissionTrackMaximum = 1000f;
-        internal const int AmbientLutRowCount = 3;
-        private const int AmbientSkyRow = 0;
-        private const int AmbientEquatorRow = 1;
-        private const int AmbientGroundRow = 2;
+        private const int AmbientSampleCount = 128;
+        private const float AmbientSolidAngleWeight = 4f / AmbientSampleCount;
+        private const float FibonacciGoldenAngle = 2.39996323f;
+        private const int FrustumCornerCount = 4;
+        // Must match the direction sequence and golden angle in
+        // Precomputation.compute.
+        private static readonly int AmbientSunDirectionId =
+            Shader.PropertyToID("_AmbientSunDirection");
+        private static readonly Vector3[] AmbientSampleDirections =
+            CreateAmbientSampleDirections();
 
         [Header("ScatteringSetting")]
         private float distanceScale = 1.0f;
@@ -89,10 +96,12 @@ namespace DawnTOD
         private const string PrecomputationResourcePath = "Precomputation";
         private bool m_LoggedMissingComputerShader;
 
-        private Vector2Int integrateCPDensityLUTSize = new Vector2Int(512, 512);
-        private Vector2Int sunOnSurfaceLUTSize = new Vector2Int(512, 512);
-        private int ambientLUTWidth = 512;
-        private Vector2Int inScatteringLUTSize = new Vector2Int(1024, 1024);
+        private static readonly Vector2Int IntegrateCpDensityLutSize =
+            new Vector2Int(512, 512);
+        private static readonly Vector2Int SunOnSurfaceLutSize =
+            new Vector2Int(512, 512);
+        private static readonly Vector2Int InScatteringLutSize =
+            new Vector2Int(1024, 1024);
 
         [Header("Debug/Output")] [NonSerialized]
         private bool m_ShowFrustumCorners = false;
@@ -100,14 +109,11 @@ namespace DawnTOD
         [NonSerialized] [ColorUsage(false, true)]
         private Color m_MainLightColor;
 
-        [NonSerialized] [ColorUsage(false, true)]
-        private Color m_AmbientSkyColor;
+        [NonSerialized]
+        private SphericalHarmonicsL2 m_AmbientProbe;
 
-        [NonSerialized] [ColorUsage(false, true)]
-        private Color m_AmbientEquatorColor;
-
-        [NonSerialized] [ColorUsage(false, true)]
-        private Color m_AmbientGroundColor;
+        [NonSerialized]
+        private float m_AmbientNormalizationScale = 1f;
 
         // x : dot(-mianLightDir,worldUp)，y：height
         [NonSerialized]
@@ -127,11 +133,17 @@ namespace DawnTOD
         private Texture2D m_SunOnSurfaceLUTReadToCPU;
         private bool m_AmbientReadbackPending;
         private bool m_AmbientReadbackWarningLogged;
+        private bool m_AmbientReadbackFailureWarningLogged;
+        private bool m_MissingMainLightWarningLogged;
         private int m_AmbientReadbackGeneration;
 
         private Camera m_Camera;
-        private Vector3[] m_FrustumCorners = new Vector3[4];
-        private Vector4[] m_FrustumCornersVec4 = new Vector4[4];
+        [NonSerialized]
+        private Vector3[] m_FrustumCorners =
+            new Vector3[FrustumCornerCount];
+        [NonSerialized]
+        private Vector4[] m_FrustumCornersVec4 =
+            new Vector4[FrustumCornerCount];
         private bool m_PipelineOutputActive;
         private bool m_PipelineOutputSuspended;
 
@@ -194,8 +206,9 @@ namespace DawnTOD
             }
             else
             {
+                EnsureFrustumCornerBuffers();
                 m_Camera.CalculateFrustumCorners(m_Camera.rect, m_Camera.farClipPlane, Camera.MonoOrStereoscopicEye.Mono, m_FrustumCorners);
-                for (int i = 0; i < 4; i++)
+                for (int i = 0; i < FrustumCornerCount; i++)
                 {
                     m_FrustumCorners[i] = m_Camera.transform.TransformDirection(m_FrustumCorners[i]);
                     m_FrustumCornersVec4[i] = m_FrustumCorners[i];
@@ -357,20 +370,20 @@ namespace DawnTOD
 
         private void ComputeIntegrateCPdensity()
         {
-            ScatteringUtils.CheckOrCreateLUT(ref m_IntegrateCPDensityLUT, integrateCPDensityLUTSize, RenderTextureFormat.RGFloat);
+            ScatteringUtils.CheckOrCreateLUT(ref m_IntegrateCPDensityLUT, IntegrateCpDensityLutSize, RenderTextureFormat.RGFloat);
 
             int index = computerShader.FindKernel("CSIntergalCPDensity");
 
             // Set Params
             computerShader.SetTexture(index, ScatteringKeys.kRWintergalCPDensityLUT, m_IntegrateCPDensityLUT);
 
-            ScatteringUtils.Dispatch(computerShader, index, integrateCPDensityLUTSize);
+            ScatteringUtils.Dispatch(computerShader, index, IntegrateCpDensityLutSize);
         }
 
         //TODO need HDR format?
         private void ComputeSunOnSurface()
         {
-            ScatteringUtils.CheckOrCreateLUT(ref m_SunOnSurfaceLUT, sunOnSurfaceLUTSize, RenderTextureFormat.DefaultHDR);
+            ScatteringUtils.CheckOrCreateLUT(ref m_SunOnSurfaceLUT, SunOnSurfaceLutSize, RenderTextureFormat.DefaultHDR);
 
             int index = computerShader.FindKernel("CSsunOnSurface");
 
@@ -378,7 +391,7 @@ namespace DawnTOD
             computerShader.SetTexture(index, ScatteringKeys.kRWsunOnSurfaceLUT, m_SunOnSurfaceLUT);
             computerShader.SetTexture(index, ScatteringKeys.kIntergalCPDensityLUT, m_IntegrateCPDensityLUT);
 
-            ScatteringUtils.Dispatch(computerShader, index, sunOnSurfaceLUTSize);
+            ScatteringUtils.Dispatch(computerShader, index, SunOnSurfaceLutSize);
         }
 
         //private void UpdateMainLight()
@@ -405,7 +418,7 @@ namespace DawnTOD
         private void ComputeInScattering()
         {
             // Need HDR?
-            ScatteringUtils.CheckOrCreateLUT(ref m_InScatteringLUT, inScatteringLUTSize, RenderTextureFormat.DefaultHDR);
+            ScatteringUtils.CheckOrCreateLUT(ref m_InScatteringLUT, InScatteringLutSize, RenderTextureFormat.DefaultHDR);
 
             int index = computerShader.FindKernel("CSInScattering");
 
@@ -413,29 +426,39 @@ namespace DawnTOD
             computerShader.SetTexture(index, ScatteringKeys.kRWinScatteringLUT, m_InScatteringLUT);
             computerShader.SetTexture(index, ScatteringKeys.kIntergalCPDensityLUT, m_IntegrateCPDensityLUT);
 
-            ScatteringUtils.Dispatch(computerShader, index, inScatteringLUTSize);
+            ScatteringUtils.Dispatch(computerShader, index, InScatteringLutSize);
         }
 
         private void ComputeAmbient()
         {
-            var size = new Vector2Int(ambientLUTWidth, AmbientLutRowCount);
+            if (mainLight == null)
+                return;
+
+            Vector3 lightDir = -mainLight.transform.forward;
+            if (!IsFiniteVector(lightDir) ||
+                lightDir.sqrMagnitude <= Mathf.Epsilon)
+                return;
+
+            lightDir.Normalize();
+            var size = new Vector2Int(AmbientSampleCount, 1);
             ScatteringUtils.CheckOrCreateLUT(ref m_AmbientLUT, size, RenderTextureFormat.DefaultHDR);
 
             int index = computerShader.FindKernel("CSAmbient");
 
             //Set Params
-            computerShader.SetTexture(index, ScatteringKeys.kInScatteringLUT, m_InScatteringLUT);
+            computerShader.SetVector(
+                AmbientSunDirectionId,
+                new Vector4(lightDir.x, lightDir.y, lightDir.z, 0f));
+            computerShader.SetTexture(
+                index,
+                ScatteringKeys.kIntergalCPDensityLUT,
+                m_IntegrateCPDensityLUT);
             computerShader.SetTexture(index, ScatteringKeys.kRWambientLUT, m_AmbientLUT);
 
-            // Each kernel invocation writes all three Trilight rows for one
-            // sun-angle sample, so only one dispatch row is required.
-            ScatteringUtils.Dispatch(
-                computerShader,
-                index,
-                new Vector2Int(ambientLUTWidth, 1));
+            ScatteringUtils.Dispatch(computerShader, index, size);
         }
 
-        private void UpdateAmbient()
+        private void UpdateAmbient(DawnAtmosphereVolume volume)
         {
             if (m_AmbientLUT == null || !m_AmbientLUT.IsCreated() || m_AmbientReadbackPending)
                 return;
@@ -454,18 +477,19 @@ namespace DawnTOD
                 return;
             }
 
-            var lightDir = -mainLight.transform.forward;
-            var cosAngle01 = Mathf.Clamp01(Vector3.Dot(Vector3.up, lightDir) * 0.5f + 0.5f);
-            int lutWidth = m_AmbientLUT.width;
             m_AmbientReadbackPending = true;
             int readbackGeneration = m_AmbientReadbackGeneration;
+            float ambientLightIntensity = SanitizeAmbientLightIntensity(
+                Resolve(
+                    volume,
+                    volume?.ambientLightIntensity,
+                    1f));
 
             if (!ScatteringUtils.RequestRTpixelsBackToCPU(
                     m_AmbientLUT, TextureFormat.RGBAFloat,
                     request => OnAmbientReadbackCompleted(
                         request,
-                        cosAngle01,
-                        lutWidth,
+                        ambientLightIntensity,
                         readbackGeneration)))
             {
                 m_AmbientReadbackPending = false;
@@ -474,8 +498,7 @@ namespace DawnTOD
 
         private void OnAmbientReadbackCompleted(
             AsyncGPUReadbackRequest request,
-            float cosAngle01,
-            int lutWidth,
+            float ambientLightIntensity,
             int readbackGeneration)
         {
             if (this == null)
@@ -486,66 +509,116 @@ namespace DawnTOD
 
             m_AmbientReadbackPending = false;
             if (!isActiveAndEnabled ||
-                !CanRenderPipelineOutput() ||
-                request.hasError)
+                !CanRenderPipelineOutput())
                 return;
+
+            if (request.hasError)
+            {
+                if (!m_AmbientReadbackFailureWarningLogged)
+                {
+                    Debug.LogWarning(
+                        "Ambient SH GPU readback failed; the last valid " +
+                        "ambient probe will be kept.",
+                        this);
+                    m_AmbientReadbackFailureWarningLogged = true;
+                }
+
+                return;
+            }
 
             var pixels = request.GetData<Color>();
-            if (lutWidth <= 0 || pixels.Length < lutWidth * AmbientLutRowCount)
+            if (pixels.Length < AmbientSampleCount)
                 return;
 
-            Color sky = pixels[GetAmbientLutPixelIndex(
-                lutWidth,
-                cosAngle01,
-                AmbientSkyRow)];
-            Color equator = pixels[GetAmbientLutPixelIndex(
-                lutWidth,
-                cosAngle01,
-                AmbientEquatorRow)];
-            Color ground = pixels[GetAmbientLutPixelIndex(
-                lutWidth,
-                cosAngle01,
-                AmbientGroundRow)];
-
-            ApplyTrilightAmbient(sky, equator, ground);
-            m_AmbientSkyColor = sky;
-            m_AmbientEquatorColor = equator;
-            m_AmbientGroundColor = ground;
+            m_AmbientProbe = BuildAmbientProbe(
+                pixels,
+                ambientLightIntensity);
+            ApplyAmbientProbe(m_AmbientProbe);
         }
 
-        internal static int GetAmbientLutPixelIndex(
-            int lutWidth,
-            float cosAngle01,
-            int row)
+        private static Vector3[] CreateAmbientSampleDirections()
         {
-            if (lutWidth <= 0)
+            var directions = new Vector3[AmbientSampleCount];
+            for (int i = 0; i < directions.Length; i++)
             {
-                throw new ArgumentOutOfRangeException(nameof(lutWidth));
+                float sample01 = (i + 0.5f) / AmbientSampleCount;
+                float y = 1f - 2f * sample01;
+                float phi = (i + 0.5f) * FibonacciGoldenAngle;
+                float radius = Mathf.Sqrt(Mathf.Max(0f, 1f - y * y));
+                directions[i] = new Vector3(
+                    Mathf.Cos(phi) * radius,
+                    y,
+                    Mathf.Sin(phi) * radius);
             }
 
-            if (row < 0 || row >= AmbientLutRowCount)
-            {
-                throw new ArgumentOutOfRangeException(nameof(row));
-            }
-
-            int column = Mathf.Clamp(
-                Mathf.FloorToInt(Mathf.Clamp01(cosAngle01) * lutWidth),
-                0,
-                lutWidth - 1);
-            return row * lutWidth + column;
+            return directions;
         }
 
-        internal static void ApplyTrilightAmbient(
-            Color sky,
-            Color equator,
-            Color ground)
+        private static float CalculateAmbientNormalizationScale()
         {
-            RenderSettings.ambientSkyColor = SanitizeAmbientColor(sky).gamma;
-            RenderSettings.ambientEquatorColor =
-                SanitizeAmbientColor(equator).gamma;
-            RenderSettings.ambientGroundColor =
-                SanitizeAmbientColor(ground).gamma;
-            RenderSettings.ambientMode = AmbientMode.Trilight;
+            var sampledUniformProbe = new SphericalHarmonicsL2();
+            for (int i = 0; i < AmbientSampleDirections.Length; i++)
+            {
+                sampledUniformProbe.AddDirectionalLight(
+                    AmbientSampleDirections[i],
+                    Color.white,
+                    AmbientSolidAngleWeight);
+            }
+
+            var referenceUniformProbe = new SphericalHarmonicsL2();
+            referenceUniformProbe.AddAmbientLight(Color.white);
+            float sampledL0 = sampledUniformProbe[0, 0];
+            float referenceL0 = referenceUniformProbe[0, 0];
+            if (!IsFinite(sampledL0) ||
+                !IsFinite(referenceL0) ||
+                Mathf.Abs(sampledL0) <= Mathf.Epsilon)
+            {
+                return 1f;
+            }
+
+            return referenceL0 / sampledL0;
+        }
+
+        private SphericalHarmonicsL2 BuildAmbientProbe(
+            NativeArray<Color> radianceSamples,
+            float ambientLightIntensity)
+        {
+            if (radianceSamples.Length < AmbientSampleCount)
+            {
+                throw new ArgumentException(
+                    "Ambient radiance sample count is smaller than expected.",
+                    nameof(radianceSamples));
+            }
+
+            ambientLightIntensity =
+                SanitizeAmbientLightIntensity(ambientLightIntensity);
+            var probe = new SphericalHarmonicsL2();
+            for (int i = 0; i < AmbientSampleCount; i++)
+            {
+                probe.AddDirectionalLight(
+                    AmbientSampleDirections[i],
+                    SanitizeAmbientColor(radianceSamples[i]),
+                    AmbientSolidAngleWeight);
+            }
+
+            for (int rgb = 0; rgb < 3; rgb++)
+            {
+                for (int coefficient = 0; coefficient < 9; coefficient++)
+                {
+                    probe[rgb, coefficient] = SanitizeAmbientCoefficient(
+                        probe[rgb, coefficient] *
+                        m_AmbientNormalizationScale *
+                        ambientLightIntensity);
+                }
+            }
+
+            return probe;
+        }
+
+        private static void ApplyAmbientProbe(SphericalHarmonicsL2 probe)
+        {
+            RenderSettings.ambientMode = AmbientMode.Custom;
+            RenderSettings.ambientProbe = probe;
         }
 
         private static Color SanitizeAmbientColor(Color color)
@@ -564,6 +637,30 @@ namespace DawnTOD
                 : Mathf.Max(0f, value);
         }
 
+        private static float SanitizeAmbientCoefficient(float value)
+        {
+            return float.IsNaN(value) || float.IsInfinity(value)
+                ? 0f
+                : value;
+        }
+
+        private static float SanitizeAmbientLightIntensity(float value)
+        {
+            return IsFinite(value) ? Mathf.Max(0f, value) : 0f;
+        }
+
+        private static bool IsFiniteVector(Vector3 value)
+        {
+            return IsFinite(value.x) &&
+                   IsFinite(value.y) &&
+                   IsFinite(value.z);
+        }
+
+        private static bool IsFinite(float value)
+        {
+            return !float.IsNaN(value) && !float.IsInfinity(value);
+        }
+
 
         private bool EnsureComputerShader()
         {
@@ -574,8 +671,27 @@ namespace DawnTOD
             return computerShader != null;
         }
 
+        private void EnsureFrustumCornerBuffers()
+        {
+            if (m_FrustumCorners == null ||
+                m_FrustumCorners.Length != FrustumCornerCount)
+            {
+                m_FrustumCorners = new Vector3[FrustumCornerCount];
+            }
+
+            if (m_FrustumCornersVec4 == null ||
+                m_FrustumCornersVec4.Length != FrustumCornerCount)
+            {
+                m_FrustumCornersVec4 =
+                    new Vector4[FrustumCornerCount];
+            }
+        }
+
         private void Awake()
         {
+            EnsureFrustumCornerBuffers();
+            m_AmbientNormalizationScale =
+                CalculateAmbientNormalizationScale();
             m_Camera = Camera.main;
             m_PipelineOutputActive = false;
             SuspendPipelineOutput();
@@ -634,7 +750,9 @@ namespace DawnTOD
                 mainLight = DawnTODSystem.Instance.GetMainDirectionalLight();
                 if (mainLight == null)
                 {
-                    Debug.LogError("Error: No directional light found in DawnTODSystem!");
+                    LogMissingMainLight(
+                        "No directional light was found in DawnTODSystem; " +
+                        "the last valid ambient probe will be kept.");
                     return;
                 }
             }
@@ -643,11 +761,24 @@ namespace DawnTOD
                 mainLight = FindObjectsOfType<Light>().FirstOrDefault(light => light.type == LightType.Directional);
                 if (mainLight == null)
                 {
-                    Debug.LogError("Error: No directional light found in the scene!");
+                    LogMissingMainLight(
+                        "No directional light was found in the scene; the " +
+                        "last valid ambient probe will be kept.");
                     return;
                 }
             }
+
+            m_MissingMainLightWarningLogged = false;
             lightFromOuterSpace = mainLight.color * mainLight.intensity;
+        }
+
+        private void LogMissingMainLight(string message)
+        {
+            if (m_MissingMainLightWarningLogged)
+                return;
+
+            Debug.LogWarning(message, this);
+            m_MissingMainLightWarningLogged = true;
         }
 
         private void OnDisable()
@@ -684,7 +815,7 @@ namespace DawnTOD
             SetCommonParams(atmosphereVolume);
             PreComputeAll(atmosphereVolume);
             //UpdateMainLight();
-            UpdateAmbient();
+            UpdateAmbient(atmosphereVolume);
         }
 
         private bool CanRenderPipelineOutput()

@@ -58,7 +58,14 @@ namespace DawnTODEditor
                 rainObject.GetComponent<DawnGPUParticleSystem>();
             rainOutput.AssignDefaultResourceOverrides();
             rainOutput.ParticleShow = false;
-            rainOutput.GetComponent<MeshRenderer>().enabled = false;
+            MeshRenderer rainRenderer = rainOutput.GetComponent<MeshRenderer>();
+            rainRenderer.enabled = false;
+
+            // Selection outlines/wireframes make Unity redraw this million-vertex
+            // procedural mesh and can destabilize the Scene View.
+            EditorUtility.SetSelectedRenderState(
+                rainRenderer,
+                EditorSelectedRenderState.Hidden);
 
             if (registerUndo)
             {

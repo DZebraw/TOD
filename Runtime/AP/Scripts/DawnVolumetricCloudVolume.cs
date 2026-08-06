@@ -33,10 +33,10 @@ namespace DawnTOD
         [Tooltip("High-frequency detail noise. Defaults to the texture referenced by the source scene.")]
         public Texture3DParameter detailNoise = new Texture3DParameter(null);
 
-        [Tooltip("Weather coverage and height-gradient texture.")]
+        [Tooltip("Packed weather map: R coverage, G cloud type, B precipitation/density bias. Grayscale maps remain compatible and drive the legacy height pattern.")]
         public Texture2DParameter weatherMap = new Texture2DParameter(null);
 
-        [Tooltip("Mask texture used to warp the shape noise.")]
+        [Tooltip("Legacy grayscale coverage and domain-warp mask used when the weather map does not contain distinct packed channels.")]
         public Texture2DParameter maskNoise = new Texture2DParameter(null);
 
         [Tooltip("Blue-noise texture used to jitter the ray-march start position.")]
@@ -44,21 +44,25 @@ namespace DawnTOD
 
         [Header("Quality")]
         [Tooltip("Cloud render resolution divisor. Higher values cost less but soften the result.")]
-        public ClampedIntParameter downsample = new ClampedIntParameter(3, 1, 8);
+        public ClampedIntParameter downsample = new ClampedIntParameter(2, 1, 8);
 
         [Tooltip("Maximum view-ray samples per pixel.")]
         public ClampedIntParameter maxRayMarchSteps =
-            new ClampedIntParameter(512, 1, 512);
+            new ClampedIntParameter(192, 1, 512);
 
-        [Tooltip("Exponent applied before rayStepLength. Kept to preserve the source scene tuning.")]
+        [Tooltip("Exponent applied before rayStepLength to form the base world-space step.")]
         public ClampedFloatParameter rayStepExponent =
-            new ClampedFloatParameter(3.57f, 0.1f, 4f);
+            new ClampedFloatParameter(3.3f, 0.1f, 4f);
 
         [Tooltip("Base world-space view-ray step length.")]
-        public MinFloatParameter rayStepLength = new MinFloatParameter(0.06f, 0.0001f);
+        public MinFloatParameter rayStepLength = new MinFloatParameter(0.07f, 0.0001f);
 
         [Tooltip("Blue-noise ray-march start offset strength.")]
-        public MinFloatParameter rayOffsetStrength = new MinFloatParameter(1.7f, 0f);
+        public MinFloatParameter rayOffsetStrength = new MinFloatParameter(1f, 0f);
+
+        [Tooltip("Weight of valid reprojected cloud history. Zero disables temporal accumulation; higher values reduce blue-noise shimmer.")]
+        public ClampedFloatParameter temporalAccumulation =
+            new ClampedFloatParameter(0.9f, 0f, 0.97f);
 
         [Header("Cloud Shape")]
         [Tooltip("Controls horizontal cloud coverage without changing the density of fully covered regions. Zero is clear sky; one restores the unmasked cloud layer.")]
@@ -122,38 +126,46 @@ namespace DawnTOD
 
         public ClampedFloatParameter colorOffset2 = new ClampedFloatParameter(1f, 0f, 2f);
 
-        [Tooltip("Extinction of direct sunlight along the light ray. Higher values deepen self-shadowing and world cloud shadows.")]
-        public ClampedFloatParameter lightAbsorptionTowardSun =
-            new ClampedFloatParameter(0.4f, 0f, 1f);
+        [Tooltip("Base extinction contributed by normalized cloud density per world unit. This keeps optical depth independent from Bounds Size and makes the remaining absorption controls dimensionless multipliers.")]
+        public ClampedFloatParameter extinctionScale =
+            new ClampedFloatParameter(0.02f, 0.001f, 0.1f);
 
-        [Tooltip("View-ray extinction. A small positive lower bound avoids transparent pixels that still add scattering energy.")]
+        [Tooltip("Multiplier for direct-sun extinction. Higher values deepen self-shadowing and world cloud shadows.")]
+        public ClampedFloatParameter lightAbsorptionTowardSun =
+            new ClampedFloatParameter(0.55f, 0f, 2f);
+
+        [Tooltip("Strength of sun-path extinction shared by cloud self-shadowing and world cloud shadows. Keeping both paths coupled prevents bright clouds from casting implausibly black shadows.")]
+        public ClampedFloatParameter selfShadowStrength =
+            new ClampedFloatParameter(0.8f, 0f, 1f);
+
+        [Tooltip("Multiplier for camera-ray extinction. A small positive lower bound keeps opacity and scattered energy coupled.")]
         public ClampedFloatParameter lightAbsorptionThroughCloud =
-            new ClampedFloatParameter(1.5f, 0.05f, 5f);
+            new ClampedFloatParameter(1f, 0.05f, 5f);
 
         [Tooltip("X forward anisotropy, Y backward anisotropy, Z forward blend, W phase intensity.")]
         public Vector4Parameter phaseParameters =
             new Vector4Parameter(new Vector4(0.75f, -0.2f, 0.8f, 1f));
 
-        [Tooltip("Minimum final sunlight response after internal-light transmission. It keeps side and back faces readable without flattening the forward phase lobe.")]
+        [Tooltip("Legacy compatibility value. The non-physical minimum solar fill is no longer applied; use sky light and internal scattering instead.")]
         public ClampedFloatParameter phaseMinimum =
             new ClampedFloatParameter(0.18f, 0f, 1f);
 
         [Tooltip("Blends Beer transmission toward a bounded Beer-Powder response near the sun. The same forward response keeps silver edges stable when Bounds Height changes, without lifting opaque cloud cores elsewhere.")]
         public ClampedFloatParameter powderEffectIntensity =
-            new ClampedFloatParameter(0.35f, 0f, 1f);
+            new ClampedFloatParameter(0.25f, 0f, 1f);
 
         [Header("Multiple Scattering")]
         [Tooltip("Extinction retained by the internal-light approximation. Lower values let sunlight reach deeper into thick clouds.")]
         public ClampedFloatParameter multiScatterExtinction =
-            new ClampedFloatParameter(0.5f, 0.05f, 1f);
+            new ClampedFloatParameter(0.45f, 0.05f, 1f);
 
         [Tooltip("Strength of the internal-light approximation. Set to zero to recover the single-scattering result.")]
         public ClampedFloatParameter multiScatterContribution =
-            new ClampedFloatParameter(0.35f, 0f, 1f);
+            new ClampedFloatParameter(0.4f, 0f, 1f);
 
         [Tooltip("Directional character retained by internal light. Zero is isotropic; one matches direct sunlight.")]
         public ClampedFloatParameter multiScatterDirectionality =
-            new ClampedFloatParameter(0.2f, 0f, 1f);
+            new ClampedFloatParameter(0.15f, 0f, 1f);
 
         [Header("Physical Diffuse Field")]
         [Tooltip("Experimental HanPi-style phi_fwd field for optically thick clouds. It is disabled by default because Internal Light and Sky Fill already provide the production baseline.")]
@@ -183,7 +195,7 @@ namespace DawnTOD
         [Header("Environment Lighting")]
         [Tooltip("Density-aware occlusion of upper-hemisphere light. Thin silhouettes retain sky fill even when their tangent ray toward the sun is long.")]
         public ClampedFloatParameter ambientOcclusionStrength =
-            new ClampedFloatParameter(0.35f, 0f, 1f);
+            new ClampedFloatParameter(0.25f, 0f, 1f);
 
         [Tooltip("Tint applied to the current scene ambient color for light entering from the sky.")]
         public ColorParameter skyLightTint =
@@ -191,7 +203,7 @@ namespace DawnTOD
 
         [Tooltip("Strength of ambient light entering the cloud from above. Set to zero to disable sky fill.")]
         public ClampedFloatParameter skyLightIntensity =
-            new ClampedFloatParameter(0.35f, 0f, 2f);
+            new ClampedFloatParameter(0.5f, 0f, 2f);
 
         [Tooltip("Ground albedo tint applied to the current scene ambient color.")]
         public ColorParameter groundLightTint =
@@ -199,10 +211,10 @@ namespace DawnTOD
 
         [Tooltip("Strength of light reflected from the ground into the cloud base. Set to zero to disable ground bounce.")]
         public ClampedFloatParameter groundLightIntensity =
-            new ClampedFloatParameter(0.12f, 0f, 2f);
+            new ClampedFloatParameter(0.1f, 0f, 2f);
 
         [Header("Animation")]
-        [Tooltip("XY are shape/detail speeds; ZW are shape/detail warp strengths.")]
+        [Tooltip("XY are shape/detail animation speeds; ZW are shape/detail warp strengths.")]
         public Vector4Parameter speedWarp =
             new Vector4Parameter(new Vector4(0.05f, 1.8f, -1.22f, 10f));
 

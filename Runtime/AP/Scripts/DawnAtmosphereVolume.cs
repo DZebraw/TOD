@@ -42,6 +42,10 @@ namespace DawnTOD
             new ClampedFloatParameter(0.625f, -1f, 1f);
 
         [Header("Environment")]
+        [Tooltip("Multiplier for the diffuse ambient probe generated from atmospheric skylight. This affects environment lighting without changing the visible sky.")]
+        public MinFloatParameter ambientLightIntensity =
+            new MinFloatParameter(1f, 0f);
+
         [Tooltip("Color behind atmosphere rays that intersect the planet surface.")]
         public ColorParameter groundColor =
             new ColorParameter(Color.black, true, false, true);

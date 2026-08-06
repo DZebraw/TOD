@@ -44,6 +44,7 @@ Shader "Hidden/DawnTOD/DirectionalVolumetricLight"
             TEXTURE2D_X(_DawnCloudTexture);
             TEXTURE2D(_DawnCloudShadowTexture);
             float4x4 _DawnCloudWorldToShadow;
+            float4 _DawnCloudShadowTexelSize;
 
             float StableScreenNoise(float2 pixelPosition)
             {
@@ -117,11 +118,34 @@ Shader "Hidden/DawnTOD/DirectionalVolumetricLight"
                     return 1.0;
                 }
 
-                float cloudTransmittance = SAMPLE_TEXTURE2D_LOD(
+                float2 penumbra = _DawnCloudShadowTexelSize.xy *
+                    lerp(0.75, 1.75, saturate(shadowCoordinate.z));
+                float cloudTransmittance =
+                    SAMPLE_TEXTURE2D_LOD(
+                        _DawnCloudShadowTexture,
+                        sampler_LinearClamp,
+                        shadowCoordinate.xy,
+                        0).r * 0.4;
+                cloudTransmittance += SAMPLE_TEXTURE2D_LOD(
                     _DawnCloudShadowTexture,
                     sampler_LinearClamp,
-                    shadowCoordinate.xy,
-                    0).r;
+                    shadowCoordinate.xy + penumbra * float2(1.0, 1.0),
+                    0).r * 0.15;
+                cloudTransmittance += SAMPLE_TEXTURE2D_LOD(
+                    _DawnCloudShadowTexture,
+                    sampler_LinearClamp,
+                    shadowCoordinate.xy + penumbra * float2(-1.0, 1.0),
+                    0).r * 0.15;
+                cloudTransmittance += SAMPLE_TEXTURE2D_LOD(
+                    _DawnCloudShadowTexture,
+                    sampler_LinearClamp,
+                    shadowCoordinate.xy + penumbra * float2(1.0, -1.0),
+                    0).r * 0.15;
+                cloudTransmittance += SAMPLE_TEXTURE2D_LOD(
+                    _DawnCloudShadowTexture,
+                    sampler_LinearClamp,
+                    shadowCoordinate.xy + penumbra * float2(-1.0, -1.0),
+                    0).r * 0.15;
                 float receiverFade = 1.0 - smoothstep(
                     0.8,
                     1.0,

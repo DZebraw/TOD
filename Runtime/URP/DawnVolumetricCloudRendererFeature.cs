@@ -1,4 +1,5 @@
 #if DAWNTOD_URP_AVAILABLE
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Experimental.Rendering;
 using UnityEngine.Rendering;
@@ -54,22 +55,26 @@ namespace DawnTOD
                 return;
             }
 
-            CloudSettings settings = CloudSettings.FromVolume(cloud);
-            if (!settings.HasRequiredTextures)
-            {
-                return;
-            }
-
             Vector3 directionToLight = Vector3.up;
+            Color mainLightColor = Color.black;
             int mainLightIndex = renderingData.lightData.mainLightIndex;
             if (mainLightIndex >= 0 &&
                 mainLightIndex < renderingData.lightData.visibleLights.Length &&
                 renderingData.lightData.visibleLights[mainLightIndex].lightType ==
                 LightType.Directional)
             {
-                directionToLight =
-                    -renderingData.lightData.visibleLights[mainLightIndex]
-                        .localToWorldMatrix.GetColumn(2);
+                VisibleLight mainLight =
+                    renderingData.lightData.visibleLights[mainLightIndex];
+                directionToLight = -mainLight.localToWorldMatrix.GetColumn(2);
+                mainLightColor = mainLight.finalColor;
+            }
+
+            CloudSettings settings = CloudSettings.FromVolume(
+                cloud,
+                mainLightColor);
+            if (!settings.HasRequiredTextures)
+            {
+                return;
             }
 
             cloudPass.Setup(cloudMaterial, settings, directionToLight.normalized);
@@ -86,12 +91,24 @@ namespace DawnTOD
 
         private readonly struct CloudSettings
         {
-            private static readonly Vector3[] DownwardProbeDirection =
+            private const int AmbientUpIndex = 0;
+            private const int AmbientRightIndex = 1;
+            private const int AmbientLeftIndex = 2;
+            private const int AmbientForwardIndex = 3;
+            private const int AmbientBackIndex = 4;
+            private const int AmbientDownIndex = 5;
+
+            private static readonly Vector3[] AmbientProbeDirections =
             {
+                Vector3.up,
+                Vector3.right,
+                Vector3.left,
+                Vector3.forward,
+                Vector3.back,
                 Vector3.down
             };
 
-            private static readonly Color[] DownwardProbeResult = new Color[1];
+            private static readonly Color[] AmbientProbeResults = new Color[6];
 
             public readonly Vector3 BoundsMinimum;
             public readonly Vector3 BoundsMaximum;
@@ -105,6 +122,7 @@ namespace DawnTOD
             public readonly float RayStepExponent;
             public readonly float RayStepLength;
             public readonly float RayOffsetStrength;
+            public readonly float TemporalAccumulation;
             public readonly float Coverage;
             public readonly float WeatherMapTiling;
             public readonly float ShapeTiling;
@@ -121,10 +139,11 @@ namespace DawnTOD
             public readonly Color ColorB;
             public readonly float ColorOffset1;
             public readonly float ColorOffset2;
+            public readonly float ExtinctionScale;
             public readonly float LightAbsorptionTowardSun;
+            public readonly float SelfShadowStrength;
             public readonly float LightAbsorptionThroughCloud;
             public readonly Vector4 PhaseParameters;
-            public readonly float PhaseMinimum;
             public readonly float PowderEffectIntensity;
             public readonly Vector4 MultiScatterParameters;
             public readonly Vector4 DiffuseFieldParameters;
@@ -152,6 +171,7 @@ namespace DawnTOD
                 float rayStepExponent,
                 float rayStepLength,
                 float rayOffsetStrength,
+                float temporalAccumulation,
                 float coverage,
                 float weatherMapTiling,
                 float shapeTiling,
@@ -168,10 +188,11 @@ namespace DawnTOD
                 Color colorB,
                 float colorOffset1,
                 float colorOffset2,
+                float extinctionScale,
                 float lightAbsorptionTowardSun,
+                float selfShadowStrength,
                 float lightAbsorptionThroughCloud,
                 Vector4 phaseParameters,
-                float phaseMinimum,
                 float powderEffectIntensity,
                 Vector4 multiScatterParameters,
                 Vector4 diffuseFieldParameters,
@@ -194,6 +215,10 @@ namespace DawnTOD
                 RayStepExponent = rayStepExponent;
                 RayStepLength = rayStepLength;
                 RayOffsetStrength = rayOffsetStrength;
+                TemporalAccumulation = Mathf.Clamp(
+                    temporalAccumulation,
+                    0f,
+                    0.97f);
                 Coverage = Mathf.Clamp01(coverage);
                 WeatherMapTiling = weatherMapTiling;
                 ShapeTiling = shapeTiling;
@@ -211,13 +236,16 @@ namespace DawnTOD
                 ColorB = colorB;
                 ColorOffset1 = colorOffset1;
                 ColorOffset2 = colorOffset2;
-                LightAbsorptionTowardSun = Mathf.Clamp01(
-                    lightAbsorptionTowardSun);
+                ExtinctionScale = Mathf.Clamp(extinctionScale, 0.0001f, 0.25f);
+                LightAbsorptionTowardSun = Mathf.Clamp(
+                    lightAbsorptionTowardSun,
+                    0f,
+                    2f);
+                SelfShadowStrength = Mathf.Clamp01(selfShadowStrength);
                 LightAbsorptionThroughCloud = Mathf.Max(
                     0.05f,
                     lightAbsorptionThroughCloud);
                 PhaseParameters = SanitizePhaseParameters(phaseParameters);
-                PhaseMinimum = Mathf.Clamp01(phaseMinimum);
                 PowderEffectIntensity = Mathf.Clamp01(powderEffectIntensity);
                 MultiScatterParameters = SanitizeMultiScatterParameters(
                     multiScatterParameters);
@@ -280,7 +308,9 @@ namespace DawnTOD
                 return parameters;
             }
 
-            public static CloudSettings FromVolume(DawnVolumetricCloudVolume cloud)
+            public static CloudSettings FromVolume(
+                DawnVolumetricCloudVolume cloud,
+                Color mainLightColor)
             {
                 Vector3 size = cloud.boundsSize.value;
                 size.x = Mathf.Max(size.x, 0.01f);
@@ -288,17 +318,11 @@ namespace DawnTOD
                 size.z = Mathf.Max(size.z, 0.01f);
                 Vector3 halfSize = size * 0.5f;
                 Vector3 center = cloud.boundsCenter.value;
-                Color sceneAmbientSky = RenderSettings.ambientLight;
-                Color sceneAmbientEquator = RenderSettings.ambientLight;
-                // The raw Trilight ground swatch can be black even when the
-                // convolved probe still contains lower-hemisphere irradiance.
-                // Clouds need that directional irradiance as diffuse bounce.
-                Color sceneAmbientGround = EvaluateDownwardAmbientProbe();
-                if (RenderSettings.ambientMode == AmbientMode.Trilight)
-                {
-                    sceneAmbientSky = RenderSettings.ambientSkyColor;
-                    sceneAmbientEquator = RenderSettings.ambientEquatorColor;
-                }
+                EvaluateAmbientProbeBands(
+                    mainLightColor,
+                    out Color sceneAmbientSky,
+                    out Color sceneAmbientEquator,
+                    out Color sceneAmbientGround);
 
                 Color ambientSkyColor = MultiplyRgb(
                     sceneAmbientSky,
@@ -331,6 +355,7 @@ namespace DawnTOD
                     cloud.rayStepExponent.value,
                     Mathf.Max(0.0001f, cloud.rayStepLength.value),
                     Mathf.Max(0f, cloud.rayOffsetStrength.value),
+                    cloud.temporalAccumulation.value,
                     cloud.coverage.value,
                     Mathf.Max(0.000001f, cloud.weatherMapTiling.value),
                     Mathf.Max(0.000001f, cloud.shapeTiling.value),
@@ -351,10 +376,11 @@ namespace DawnTOD
                     cloud.colorB.value,
                     cloud.colorOffset1.value,
                     cloud.colorOffset2.value,
+                    cloud.extinctionScale.value,
                     cloud.lightAbsorptionTowardSun.value,
+                    cloud.selfShadowStrength.value,
                     cloud.lightAbsorptionThroughCloud.value,
                     cloud.phaseParameters.value,
-                    cloud.phaseMinimum.value,
                     cloud.powderEffectIntensity.value,
                     new Vector4(
                         cloud.multiScatterExtinction.value,
@@ -378,16 +404,106 @@ namespace DawnTOD
                     cloud.speedWarp.value);
             }
 
-            private static Color EvaluateDownwardAmbientProbe()
+            private static void EvaluateAmbientProbeBands(
+                Color mainLightColor,
+                out Color sky,
+                out Color equator,
+                out Color ground)
             {
                 RenderSettings.ambientProbe.Evaluate(
-                    DownwardProbeDirection,
-                    DownwardProbeResult);
-                Color color = DownwardProbeResult[0];
+                    AmbientProbeDirections,
+                    AmbientProbeResults);
+
+                sky = SanitizeAmbientProbeColor(
+                    AmbientProbeResults[AmbientUpIndex]);
+                ground = SanitizeAmbientProbeColor(
+                    AmbientProbeResults[AmbientDownIndex]);
+                equator = AverageAmbientProbeColors(
+                    AmbientProbeResults[AmbientRightIndex],
+                    AmbientProbeResults[AmbientLeftIndex],
+                    AmbientProbeResults[AmbientForwardIndex],
+                    AmbientProbeResults[AmbientBackIndex]);
+
+                Color ambientFallback = CreateAmbientFallback(mainLightColor);
+                sky = MaxRgb(sky, ambientFallback);
+                equator = MaxRgb(equator, ScaleRgb(ambientFallback, 0.65f));
+                ground = MaxRgb(ground, ScaleRgb(ambientFallback, 0.25f));
+            }
+
+            private static Color CreateAmbientFallback(Color mainLightColor)
+            {
+                Color ambientColor = SanitizeAmbientProbeColor(
+                    RenderSettings.ambientLight);
+                if (MaxRgbComponent(ambientColor) > 0.0001f)
+                {
+                    return ambientColor;
+                }
+
+                Color directionalColor = SanitizeAmbientProbeColor(
+                    mainLightColor);
+                float directionalPeak = MaxRgbComponent(directionalColor);
+                if (directionalPeak <= 0.0001f)
+                {
+                    return Color.black;
+                }
+
+                float fallbackScale = Mathf.Min(0.08f, 0.12f / directionalPeak);
+                return ScaleRgb(directionalColor, fallbackScale);
+            }
+
+            private static Color AverageAmbientProbeColors(
+                Color first,
+                Color second,
+                Color third,
+                Color fourth)
+            {
                 return new Color(
-                    Mathf.Max(0f, color.r),
-                    Mathf.Max(0f, color.g),
-                    Mathf.Max(0f, color.b),
+                    SanitizeAmbientProbeChannel(
+                        (first.r + second.r + third.r + fourth.r) * 0.25f),
+                    SanitizeAmbientProbeChannel(
+                        (first.g + second.g + third.g + fourth.g) * 0.25f),
+                    SanitizeAmbientProbeChannel(
+                        (first.b + second.b + third.b + fourth.b) * 0.25f),
+                    1f);
+            }
+
+            private static Color SanitizeAmbientProbeColor(Color color)
+            {
+                return new Color(
+                    SanitizeAmbientProbeChannel(color.r),
+                    SanitizeAmbientProbeChannel(color.g),
+                    SanitizeAmbientProbeChannel(color.b),
+                    1f);
+            }
+
+            private static float SanitizeAmbientProbeChannel(float value)
+            {
+                return float.IsNaN(value) || float.IsInfinity(value)
+                    ? 0f
+                    : Mathf.Max(0f, value);
+            }
+
+            private static float MaxRgbComponent(Color color)
+            {
+                return Mathf.Max(color.r, Mathf.Max(color.g, color.b));
+            }
+
+            private static Color MaxRgb(Color first, Color second)
+            {
+                return new Color(
+                    Mathf.Max(first.r, second.r),
+                    Mathf.Max(first.g, second.g),
+                    Mathf.Max(first.b, second.b),
+                    1f);
+            }
+
+            private static Color ScaleRgb(Color color, float scale)
+            {
+                float safeScale = Mathf.Max(0f, scale);
+                return new Color(
+                    color.r * safeScale,
+                    color.g * safeScale,
+                    color.b * safeScale,
                     1f);
             }
 
@@ -420,18 +536,30 @@ namespace DawnTOD
                 Shader.PropertyToID("_DawnCloudLowDepthTexture");
             private static readonly int CloudTextureId =
                 Shader.PropertyToID("_DawnCloudTexture");
-            private static readonly int CloudReferenceTextureId =
-                Shader.PropertyToID("_DawnCloudReferenceTexture");
-            private static readonly int CloudSceneTextureId =
-                Shader.PropertyToID("_DawnCloudSceneTexture");
-            private static readonly int CloudSkyTextureId =
-                Shader.PropertyToID("_DawnCloudSkyTexture");
-            private static readonly int CloudSkyCorrectionId =
-                Shader.PropertyToID("_DawnCloudSkyCorrection");
+            private static readonly int CloudDistanceTextureId =
+                Shader.PropertyToID("_DawnCloudDistanceTexture");
+            private static readonly int CloudHistoryTextureId =
+                Shader.PropertyToID("_DawnCloudHistoryTexture");
+            private static readonly int CloudHistoryDistanceTextureId =
+                Shader.PropertyToID("_DawnCloudHistoryDistanceTexture");
+            private static readonly int CloudBufferSizeId =
+                Shader.PropertyToID("_DawnCloudBufferSize");
+            private static readonly int CloudPreviousViewProjectionId =
+                Shader.PropertyToID("_DawnCloudPreviousViewProjection");
+            private static readonly int CloudPreviousCameraPositionId =
+                Shader.PropertyToID("_DawnCloudPreviousCameraPosition");
+            private static readonly int CloudHistoryValidId =
+                Shader.PropertyToID("_DawnCloudHistoryValid");
+            private static readonly int CloudTemporalBlendId =
+                Shader.PropertyToID("_DawnCloudTemporalBlend");
+            private static readonly int CloudDepthDownsampleScaleId =
+                Shader.PropertyToID("_DawnCloudDepthDownsampleScale");
             private static readonly int CloudShadowTextureId =
                 Shader.PropertyToID("_DawnCloudShadowTexture");
             private static readonly int CloudWorldToShadowId =
                 Shader.PropertyToID("_DawnCloudWorldToShadow");
+            private static readonly int CloudShadowTexelSizeId =
+                Shader.PropertyToID("_DawnCloudShadowTexelSize");
             private static readonly int CloudShadowRayOriginId =
                 Shader.PropertyToID("_DawnCloudShadowRayOrigin");
             private static readonly int CloudShadowRightId =
@@ -454,8 +582,6 @@ namespace DawnTOD
                 Shader.PropertyToID("_DawnCloudColorB");
             private static readonly int PhaseParametersId =
                 Shader.PropertyToID("_DawnCloudPhaseParameters");
-            private static readonly int PhaseMinimumId =
-                Shader.PropertyToID("_DawnCloudPhaseMinimum");
             private static readonly int PowderEffectIntensityId =
                 Shader.PropertyToID("_DawnCloudPowderEffectIntensity");
             private static readonly int MultiScatterParametersId =
@@ -509,8 +635,12 @@ namespace DawnTOD
                 Shader.PropertyToID("_DawnCloudColorOffset1");
             private static readonly int ColorOffset2Id =
                 Shader.PropertyToID("_DawnCloudColorOffset2");
+            private static readonly int ExtinctionScaleId =
+                Shader.PropertyToID("_DawnCloudExtinctionScale");
             private static readonly int LightAbsorptionTowardSunId =
                 Shader.PropertyToID("_DawnCloudLightAbsorptionTowardSun");
+            private static readonly int SelfShadowStrengthId =
+                Shader.PropertyToID("_DawnCloudSelfShadowStrength");
             private static readonly int LightAbsorptionThroughCloudId =
                 Shader.PropertyToID("_DawnCloudLightAbsorptionThroughCloud");
             private static readonly int MaxRayMarchStepsId =
@@ -521,21 +651,55 @@ namespace DawnTOD
                 new Vector4(1f, 1f, 0f, 0f);
             private readonly RenderTargetIdentifier[] cloudTargets =
                 new RenderTargetIdentifier[2];
+            private readonly RenderTargetIdentifier[] resolveTargets =
+                new RenderTargetIdentifier[2];
+            private readonly RenderTargetIdentifier[] upsampleTargets =
+                new RenderTargetIdentifier[2];
 
             private Material material;
             private CloudSettings settings;
             private RTHandle lowDepthTexture;
             private RTHandle cloudTexture;
-            private RTHandle cloudReferenceTexture;
-            private RTHandle cloudSceneTexture;
-            private RTHandle cloudSkyTexture;
+            private RTHandle cloudDistanceTexture;
+            private RTHandle resolvedCloudTexture;
+            private RTHandle resolvedCloudDistanceTexture;
+            private RTHandle upsampledCloudTexture;
+            private RTHandle upsampledCloudDistanceTexture;
             private RTHandle cloudShadowTexture;
+            private readonly Dictionary<int, HistoryState> historyStates =
+                new Dictionary<int, HistoryState>();
+            private HistoryState currentHistory;
+            private Matrix4x4 currentViewProjection;
+            private Vector4 cloudBufferSize;
             private Vector4 blueNoiseScale;
             private Vector3 lightDirection;
             private Vector3 cloudShadowRayOrigin;
             private Vector3 cloudShadowRight;
             private Vector3 cloudShadowUp;
             private Matrix4x4 cloudWorldToShadow;
+
+            private sealed class HistoryState
+            {
+                public RTHandle Cloud;
+                public RTHandle Distance;
+                public Matrix4x4 PreviousViewProjection;
+                public Vector3 PreviousCameraPosition;
+                public int Width;
+                public int Height;
+                public int VolumeDepth;
+                public TextureDimension Dimension;
+                public int LastFrame = -1;
+                public bool Valid;
+
+                public void Release()
+                {
+                    Cloud?.Release();
+                    Cloud = null;
+                    Distance?.Release();
+                    Distance = null;
+                    Valid = false;
+                }
+            }
 
             public DawnVolumetricCloudRenderPass(string passName)
             {
@@ -560,15 +724,22 @@ namespace DawnTOD
                 ref RenderingData renderingData)
             {
                 ResetTarget();
-                RenderTextureDescriptor descriptor =
+                RenderTextureDescriptor fullDescriptor =
                     renderingData.cameraData.cameraTargetDescriptor;
+                fullDescriptor.msaaSamples = 1;
+                fullDescriptor.depthBufferBits = 0;
+                fullDescriptor.useMipMap = false;
+                fullDescriptor.autoGenerateMips = false;
+
+                RenderTextureDescriptor descriptor = fullDescriptor;
                 int downsample = settings.Downsample;
                 descriptor.width = Mathf.Max(1, descriptor.width / downsample);
                 descriptor.height = Mathf.Max(1, descriptor.height / downsample);
-                descriptor.msaaSamples = 1;
-                descriptor.depthBufferBits = 0;
-                descriptor.useMipMap = false;
-                descriptor.autoGenerateMips = false;
+                cloudBufferSize = new Vector4(
+                    descriptor.width,
+                    descriptor.height,
+                    1f / descriptor.width,
+                    1f / descriptor.height);
 
                 RenderTextureDescriptor depthDescriptor = descriptor;
                 depthDescriptor.graphicsFormat = GraphicsFormat.R32_SFloat;
@@ -587,24 +758,53 @@ namespace DawnTOD
                     FilterMode.Bilinear,
                     TextureWrapMode.Clamp,
                     name: "_DawnVolumetricCloudTexture");
+
+                RenderTextureDescriptor cloudDistanceDescriptor = descriptor;
+                cloudDistanceDescriptor.graphicsFormat =
+                    GraphicsFormat.R32_SFloat;
                 RenderingUtils.ReAllocateIfNeeded(
-                    ref cloudReferenceTexture,
+                    ref cloudDistanceTexture,
+                    cloudDistanceDescriptor,
+                    FilterMode.Bilinear,
+                    TextureWrapMode.Clamp,
+                    name: "_DawnVolumetricCloudDistance");
+
+                RenderingUtils.ReAllocateIfNeeded(
+                    ref resolvedCloudTexture,
                     cloudDescriptor,
                     FilterMode.Bilinear,
                     TextureWrapMode.Clamp,
-                    name: "_DawnVolumetricCloudReference");
+                    name: "_DawnVolumetricCloudResolved");
                 RenderingUtils.ReAllocateIfNeeded(
-                    ref cloudSceneTexture,
-                    cloudDescriptor,
+                    ref resolvedCloudDistanceTexture,
+                    cloudDistanceDescriptor,
                     FilterMode.Bilinear,
                     TextureWrapMode.Clamp,
-                    name: "_DawnVolumetricCloudScene");
+                    name: "_DawnVolumetricCloudResolvedDistance");
+
+                RenderTextureDescriptor fullCloudDescriptor = fullDescriptor;
+                fullCloudDescriptor.graphicsFormat =
+                    GraphicsFormat.R16G16B16A16_SFloat;
                 RenderingUtils.ReAllocateIfNeeded(
-                    ref cloudSkyTexture,
-                    cloudDescriptor,
+                    ref upsampledCloudTexture,
+                    fullCloudDescriptor,
                     FilterMode.Bilinear,
                     TextureWrapMode.Clamp,
-                    name: "_DawnVolumetricCloudSky");
+                    name: "_DawnVolumetricCloudUpsampled");
+                RenderTextureDescriptor fullDistanceDescriptor = fullDescriptor;
+                fullDistanceDescriptor.graphicsFormat =
+                    GraphicsFormat.R32_SFloat;
+                RenderingUtils.ReAllocateIfNeeded(
+                    ref upsampledCloudDistanceTexture,
+                    fullDistanceDescriptor,
+                    FilterMode.Bilinear,
+                    TextureWrapMode.Clamp,
+                    name: "_DawnVolumetricCloudUpsampledDistance");
+
+                PrepareHistory(
+                    renderingData.cameraData.camera,
+                    cloudDescriptor,
+                    cloudDistanceDescriptor);
 
                 var cloudShadowDescriptor = new RenderTextureDescriptor(
                     CloudShadowResolution,
@@ -628,13 +828,21 @@ namespace DawnTOD
 
                 UpdateCloudShadowProjection();
 
+                Camera camera = renderingData.cameraData.camera;
+                currentViewProjection =
+                    GL.GetGPUProjectionMatrix(
+                        camera.nonJitteredProjectionMatrix,
+                        true) *
+                    camera.worldToCameraMatrix;
+
+                int temporalFrame = Time.frameCount & 63;
                 blueNoiseScale = new Vector4(
                     renderingData.cameraData.cameraTargetDescriptor.width /
                     (float)Mathf.Max(1, settings.BlueNoise.width),
                     renderingData.cameraData.cameraTargetDescriptor.height /
                     (float)Mathf.Max(1, settings.BlueNoise.height),
-                    0f,
-                    0f);
+                    Mathf.Repeat(temporalFrame * 0.754877666f, 1f),
+                    Mathf.Repeat(temporalFrame * 0.569840296f, 1f));
             }
 
             public override void Execute(
@@ -642,29 +850,20 @@ namespace DawnTOD
                 ref RenderingData renderingData)
             {
                 if (material == null || lowDepthTexture == null ||
-                    cloudTexture == null || cloudReferenceTexture == null ||
-                    cloudSceneTexture == null ||
-                    cloudSkyTexture == null || cloudShadowTexture == null)
+                    cloudTexture == null || cloudDistanceTexture == null ||
+                    resolvedCloudTexture == null ||
+                    resolvedCloudDistanceTexture == null ||
+                    upsampledCloudTexture == null ||
+                    upsampledCloudDistanceTexture == null ||
+                    cloudShadowTexture == null || currentHistory == null ||
+                    currentHistory.Cloud == null ||
+                    currentHistory.Distance == null)
                 {
                     return;
                 }
 
                 CommandBuffer cmd = CommandBufferPool.Get();
                 Camera camera = renderingData.cameraData.camera;
-                bool correctTransmittedBackground =
-                    camera.clearFlags == CameraClearFlags.Skybox &&
-                    RenderSettings.skybox != null;
-                if (correctTransmittedBackground)
-                {
-                    CoreUtils.SetRenderTarget(
-                        cmd,
-                        cloudSkyTexture,
-                        ClearFlag.Color,
-                        Color.clear);
-                    context.ExecuteCommandBuffer(cmd);
-                    cmd.Clear();
-                    context.DrawSkybox(camera);
-                }
 
                 using (new ProfilingScope(cmd, profilingSampler))
                 {
@@ -690,50 +889,125 @@ namespace DawnTOD
                     cmd.SetGlobalMatrix(
                         CloudWorldToShadowId,
                         cloudWorldToShadow);
+                    cmd.SetGlobalVector(
+                        CloudShadowTexelSizeId,
+                        new Vector4(
+                            1f / CloudShadowResolution,
+                            1f / CloudShadowResolution,
+                            CloudShadowResolution,
+                            CloudShadowResolution));
 
                     PropertyBlock.Clear();
                     PropertyBlock.SetVector(BlitScaleBiasId, FullScreenScaleBias);
+                    PropertyBlock.SetFloat(
+                        CloudDepthDownsampleScaleId,
+                        settings.Downsample);
                     CoreUtils.SetRenderTarget(cmd, lowDepthTexture);
                     CoreUtils.DrawFullScreen(cmd, material, PropertyBlock, 0);
 
                     SetCloudProperties(PropertyBlock);
                     PropertyBlock.SetTexture(LowDepthTextureId, lowDepthTexture);
                     cloudTargets[0] = cloudTexture.nameID;
-                    cloudTargets[1] = cloudReferenceTexture.nameID;
+                    cloudTargets[1] = cloudDistanceTexture.nameID;
                     CoreUtils.SetRenderTarget(
                         cmd,
                         cloudTargets,
-                        cloudTexture);
+                        BuiltinRenderTextureType.None);
+                    CoreUtils.SetViewport(cmd, cloudTexture);
                     CoreUtils.DrawFullScreen(cmd, material, PropertyBlock, 1);
 
-                    // The directional-light pass runs immediately after clouds.
-                    // Publish alpha (camera-ray cloud transmittance) so cloud gaps
-                    // can shape screen-space crepuscular rays.
-                    cmd.SetGlobalTexture(CloudTextureId, cloudTexture.nameID);
+                    bool historyValid =
+                        currentHistory.Valid &&
+                        settings.TemporalAccumulation > 0f &&
+                        !camera.orthographic &&
+                        !camera.stereoEnabled;
+
+                    PropertyBlock.Clear();
+                    SetCloudProperties(PropertyBlock);
+                    PropertyBlock.SetTexture(CloudTextureId, cloudTexture);
+                    PropertyBlock.SetTexture(
+                        CloudDistanceTextureId,
+                        cloudDistanceTexture);
+                    PropertyBlock.SetTexture(
+                        CloudHistoryTextureId,
+                        currentHistory.Cloud);
+                    PropertyBlock.SetTexture(
+                        CloudHistoryDistanceTextureId,
+                        currentHistory.Distance);
+                    PropertyBlock.SetVector(
+                        CloudBufferSizeId,
+                        cloudBufferSize);
+                    PropertyBlock.SetMatrix(
+                        CloudPreviousViewProjectionId,
+                        currentHistory.PreviousViewProjection);
+                    PropertyBlock.SetVector(
+                        CloudPreviousCameraPositionId,
+                        currentHistory.PreviousCameraPosition);
+                    PropertyBlock.SetFloat(
+                        CloudHistoryValidId,
+                        historyValid ? 1f : 0f);
+                    PropertyBlock.SetFloat(
+                        CloudTemporalBlendId,
+                        settings.TemporalAccumulation);
+                    resolveTargets[0] = resolvedCloudTexture.nameID;
+                    resolveTargets[1] =
+                        resolvedCloudDistanceTexture.nameID;
+                    CoreUtils.SetRenderTarget(
+                        cmd,
+                        resolveTargets,
+                        BuiltinRenderTextureType.None);
+                    CoreUtils.SetViewport(cmd, resolvedCloudTexture);
+                    CoreUtils.DrawFullScreen(cmd, material, PropertyBlock, 4);
+
+                    Blitter.BlitCameraTexture(
+                        cmd,
+                        resolvedCloudTexture,
+                        currentHistory.Cloud);
+                    Blitter.BlitCameraTexture(
+                        cmd,
+                        resolvedCloudDistanceTexture,
+                        currentHistory.Distance);
+
+                    PropertyBlock.Clear();
+                    SetCloudProperties(PropertyBlock);
+                    PropertyBlock.SetTexture(
+                        CloudTextureId,
+                        resolvedCloudTexture);
+                    PropertyBlock.SetTexture(
+                        CloudDistanceTextureId,
+                        resolvedCloudDistanceTexture);
+                    PropertyBlock.SetTexture(
+                        LowDepthTextureId,
+                        lowDepthTexture);
+                    PropertyBlock.SetVector(
+                        CloudBufferSizeId,
+                        cloudBufferSize);
+                    upsampleTargets[0] = upsampledCloudTexture.nameID;
+                    upsampleTargets[1] =
+                        upsampledCloudDistanceTexture.nameID;
+                    CoreUtils.SetRenderTarget(
+                        cmd,
+                        upsampleTargets,
+                        BuiltinRenderTextureType.None);
+                    CoreUtils.SetViewport(cmd, upsampledCloudTexture);
+                    CoreUtils.DrawFullScreen(cmd, material, PropertyBlock, 5);
+
+                    // Publish the full-resolution reconstruction so fog and
+                    // screen-space light shafts consume the same stable result.
+                    cmd.SetGlobalTexture(
+                        CloudTextureId,
+                        upsampledCloudTexture.nameID);
+                    cmd.SetGlobalTexture(
+                        CloudDistanceTextureId,
+                        upsampledCloudDistanceTexture.nameID);
 
                     RTHandle cameraColor =
                         renderingData.cameraData.renderer.cameraColorTargetHandle;
-                    CoreUtils.SetRenderTarget(cmd, cloudSceneTexture);
-                    Blitter.BlitTexture(
-                        cmd,
-                        cameraColor,
-                        FullScreenScaleBias,
-                        0f,
-                        false);
-
                     PropertyBlock.Clear();
                     PropertyBlock.SetVector(BlitScaleBiasId, FullScreenScaleBias);
-                    PropertyBlock.SetTexture(CloudTextureId, cloudTexture);
                     PropertyBlock.SetTexture(
-                        CloudReferenceTextureId,
-                        cloudReferenceTexture);
-                    PropertyBlock.SetTexture(
-                        CloudSceneTextureId,
-                        cloudSceneTexture);
-                    PropertyBlock.SetTexture(CloudSkyTextureId, cloudSkyTexture);
-                    PropertyBlock.SetFloat(
-                        CloudSkyCorrectionId,
-                        correctTransmittedBackground ? 4f : 0f);
+                        CloudTextureId,
+                        upsampledCloudTexture);
                     CoreUtils.SetRenderTarget(
                         cmd,
                         cameraColor);
@@ -742,6 +1016,13 @@ namespace DawnTOD
 
                 context.ExecuteCommandBuffer(cmd);
                 CommandBufferPool.Release(cmd);
+
+                currentHistory.PreviousViewProjection =
+                    currentViewProjection;
+                currentHistory.PreviousCameraPosition =
+                    camera.transform.position;
+                currentHistory.LastFrame = Time.frameCount;
+                currentHistory.Valid = true;
             }
 
             public void Dispose()
@@ -750,14 +1031,85 @@ namespace DawnTOD
                 lowDepthTexture = null;
                 cloudTexture?.Release();
                 cloudTexture = null;
-                cloudReferenceTexture?.Release();
-                cloudReferenceTexture = null;
-                cloudSceneTexture?.Release();
-                cloudSceneTexture = null;
-                cloudSkyTexture?.Release();
-                cloudSkyTexture = null;
+                cloudDistanceTexture?.Release();
+                cloudDistanceTexture = null;
+                resolvedCloudTexture?.Release();
+                resolvedCloudTexture = null;
+                resolvedCloudDistanceTexture?.Release();
+                resolvedCloudDistanceTexture = null;
+                upsampledCloudTexture?.Release();
+                upsampledCloudTexture = null;
+                upsampledCloudDistanceTexture?.Release();
+                upsampledCloudDistanceTexture = null;
                 cloudShadowTexture?.Release();
                 cloudShadowTexture = null;
+                foreach (HistoryState history in historyStates.Values)
+                {
+                    history.Release();
+                }
+                historyStates.Clear();
+                currentHistory = null;
+            }
+
+            private void PrepareHistory(
+                Camera camera,
+                RenderTextureDescriptor cloudDescriptor,
+                RenderTextureDescriptor distanceDescriptor)
+            {
+                int cameraId = camera.GetInstanceID();
+                if (!historyStates.TryGetValue(
+                        cameraId,
+                        out HistoryState history))
+                {
+                    history = new HistoryState();
+                    historyStates.Add(cameraId, history);
+                }
+
+                bool descriptorChanged =
+                    history.Width != cloudDescriptor.width ||
+                    history.Height != cloudDescriptor.height ||
+                    history.VolumeDepth != cloudDescriptor.volumeDepth ||
+                    history.Dimension != cloudDescriptor.dimension;
+                if (descriptorChanged)
+                {
+                    history.Valid = false;
+                    history.Width = cloudDescriptor.width;
+                    history.Height = cloudDescriptor.height;
+                    history.VolumeDepth = cloudDescriptor.volumeDepth;
+                    history.Dimension = cloudDescriptor.dimension;
+                }
+
+                RenderingUtils.ReAllocateIfNeeded(
+                    ref history.Cloud,
+                    cloudDescriptor,
+                    FilterMode.Bilinear,
+                    TextureWrapMode.Clamp,
+                    name: $"_DawnVolumetricCloudHistory_{cameraId}");
+                RenderingUtils.ReAllocateIfNeeded(
+                    ref history.Distance,
+                    distanceDescriptor,
+                    FilterMode.Bilinear,
+                    TextureWrapMode.Clamp,
+                    name: $"_DawnVolumetricCloudHistoryDistance_{cameraId}");
+
+                if (history.LastFrame >= 0 &&
+                    Time.frameCount - history.LastFrame > 1)
+                {
+                    history.Valid = false;
+                }
+
+                float cameraCutDistance = Mathf.Max(
+                    100f,
+                    (settings.BoundsMaximum - settings.BoundsMinimum)
+                        .magnitude * 0.25f);
+                if (history.Valid && Vector3.Distance(
+                        history.PreviousCameraPosition,
+                        camera.transform.position) > cameraCutDistance)
+                {
+                    history.Valid = false;
+                }
+
+                currentHistory = history;
             }
 
             private void UpdateCloudShadowProjection()
@@ -874,7 +1226,6 @@ namespace DawnTOD
                 properties.SetColor(ColorAId, settings.ColorA);
                 properties.SetColor(ColorBId, settings.ColorB);
                 properties.SetVector(PhaseParametersId, settings.PhaseParameters);
-                properties.SetFloat(PhaseMinimumId, settings.PhaseMinimum);
                 properties.SetFloat(
                     PowderEffectIntensityId,
                     settings.PowderEffectIntensity);
@@ -921,9 +1272,13 @@ namespace DawnTOD
                 properties.SetFloat(RayOffsetStrengthId, settings.RayOffsetStrength);
                 properties.SetFloat(ColorOffset1Id, settings.ColorOffset1);
                 properties.SetFloat(ColorOffset2Id, settings.ColorOffset2);
+                properties.SetFloat(ExtinctionScaleId, settings.ExtinctionScale);
                 properties.SetFloat(
                     LightAbsorptionTowardSunId,
                     settings.LightAbsorptionTowardSun);
+                properties.SetFloat(
+                    SelfShadowStrengthId,
+                    settings.SelfShadowStrength);
                 properties.SetFloat(
                     LightAbsorptionThroughCloudId,
                     settings.LightAbsorptionThroughCloud);

@@ -397,11 +397,14 @@ namespace DawnTOD
             }
 
             warnedMissingCamera = false;
-            Vector3 cameraPosition = mainCamera.transform.position;
-            transform.position = new Vector3(
-                cameraPosition.x,
-                cameraPosition.y + yOffset,
-                cameraPosition.z);
+            Transform cameraTransform = mainCamera.transform;
+            Vector3 cameraPosition = cameraTransform.position;
+            transform.SetPositionAndRotation(
+                new Vector3(
+                    cameraPosition.x,
+                    cameraPosition.y + yOffset,
+                    cameraPosition.z),
+                cameraTransform.rotation);
         }
 
         private bool IsConfigurationCurrent()

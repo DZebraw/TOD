@@ -38,7 +38,7 @@ Material:
     - _NearBlurFalloff: 3
     - _ParticleSize: 0.5
     - _ParticleWidth: 0.01
-    - _RainIntensity: 0.05
+    - _RainIntensity: 0.238
     - _WindHorizontalSpeed: 0
     m_Colors:
     - _RainColor: {r: 1, g: 1, b: 1, a: 1}
