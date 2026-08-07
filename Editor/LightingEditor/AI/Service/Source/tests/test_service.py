@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import hashlib
+import json
 
 import httpx
 import pytest
@@ -12,6 +13,7 @@ from dawn_tod_ai_service.constants import (
     MODE,
     SCHEMA_VERSION,
     SERVICE_VERSION,
+    URP_NON_NULL_FIELDS,
     VALIDATION_PROBE_DATA,
 )
 from conftest import AI_ROOT, HEADERS, TOKEN, FakeProvider, make_request
@@ -101,7 +103,7 @@ async def test_empty_input_returns_stable_error(client: httpx.AsyncClient, empty
 @pytest.mark.asyncio
 async def test_schema_version_mismatch_is_rejected(client: httpx.AsyncClient):
     payload = make_request()
-    payload["schema_version"] = "2.0"
+    payload["schema_version"] = "9.9"
 
     response = await client.post("/analyze", headers=HEADERS, json=payload)
 
@@ -183,12 +185,40 @@ async def test_shutdown_uses_callback_after_response():
 @pytest.mark.asyncio
 async def test_invalid_snapshot_range_is_rejected(client: httpx.AsyncClient):
     payload = copy.deepcopy(make_request())
-    payload["snapshot"]["sun"]["intensity"] = 8.01
+    payload["snapshot"]["sun"]["intensity"] = -0.01
 
     response = await client.post("/analyze", headers=HEADERS, json=payload)
 
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "INVALID_REQUEST"
+
+
+@pytest.mark.asyncio
+async def test_urp_request_rejects_hdrp_exposure_capability(client: httpx.AsyncClient):
+    payload = make_request()
+    payload["pipeline"] = "URP"
+
+    response = await client.post("/analyze", headers=HEADERS, json=payload)
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "INVALID_REQUEST"
+
+
+@pytest.mark.asyncio
+async def test_urp_request_accepts_current_urp_capabilities():
+    output = copy.deepcopy(VALIDATION_PROBE_DATA)
+    output["exposure"]["compensation_ev"] = None
+    app = create_app(AI_ROOT, TOKEN, provider=FakeProvider([json.dumps(output)]))
+    transport = httpx.ASGITransport(app=app)
+    payload = make_request()
+    payload["pipeline"] = "URP"
+    payload["capabilities"]["supported_non_null_fields"] = list(URP_NON_NULL_FIELDS)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post("/analyze", headers=HEADERS, json=payload)
+
+    assert response.status_code == 200
+    assert response.json()["data"] == output
 
 
 @pytest.mark.asyncio

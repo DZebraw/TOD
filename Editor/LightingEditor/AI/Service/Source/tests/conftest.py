@@ -45,7 +45,7 @@ def make_request(user_input: str = "正午晴天") -> dict:
     return {
         "request_id": str(uuid4()),
         "schema_version": SCHEMA_VERSION,
-        "pipeline": "URP",
+        "pipeline": "HDRP",
         "user_input": user_input,
         "capabilities": {
             "supported_non_null_fields": list(SUPPORTED_NON_NULL_FIELDS),
@@ -63,6 +63,20 @@ def make_request(user_input: str = "正午晴天") -> dict:
                 "elevation_deg": -52.0,
                 "intensity": 0.2,
                 "color": {"r": 0.7, "g": 0.8, "b": 1.0, "a": 1.0},
+            },
+            "sky": {"star_emission": 800.0},
+            "fog": {
+                "mean_free_path_m": 500.0,
+                "base_height_m": 0.02,
+                "color": {"r": 0.7, "g": 0.8, "b": 0.9, "a": 1.0},
+            },
+            "exposure": {"compensation_ev": 0.0},
+            "rain": {
+                "enabled": False,
+                "precipitation_amount": 1.0,
+                "fall_speed": 40.0,
+                "density": 1.0,
+                "wind_z_rotation_deg": 15.0,
             },
         },
     }

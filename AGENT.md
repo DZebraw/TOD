@@ -31,7 +31,7 @@
 | `Runtime/Resources/`、`Runtime/Shader/` | 降雨粒子计算、默认 Prefab/Material 和渲染 | 改 C# 参数时要同步检查 Shader/Compute Shader 属性 |
 | `Runtime/Resources/Textures/`、`Texture/` | 包内运行时纹理和天空/月亮纹理 | Unity 资源必须保留对应 `.meta` |
 | `Editor/` | Unity 编辑器 Inspector、Hierarchy 菜单、Lighting Editor | 仅编辑器代码，主要命名空间为 `DawnTODEditor` |
-| `Editor/LightingEditor/AI/` | View1 自然语言天气助手、协议、服务、Prompt/Skill/Schema | 仅 Windows Unity Editor；所有字段消费必须保持首版白名单 |
+| `Editor/LightingEditor/AI/` | View1 自然语言天气助手、协议、服务、Prompt/Skill/Schema | 仅 Windows Unity Editor；字段消费必须受当前管线和目标资源能力白名单约束 |
 | `package.json` | UPM 包元数据 | 修改包名、版本或 Unity 基线需谨慎评估兼容性 |
 
 程序集边界由以下文件定义：
@@ -122,28 +122,28 @@ DawnTODSystem（时间、控制器发现、时间段和天气混合）
 
 ## AI 自然语言天气模块
 
-该模块嵌入 Lighting Editor View1，使用本地 Windows EXE 代理 DeepSeek；它不属于 Runtime，也不支持 HDRP、macOS、Linux 或运行时构建。当前首版只允许修改时间、太阳和月亮，不应用雾、星空、曝光或降雨字段。
+该模块嵌入 Lighting Editor View1，使用本地 Windows EXE 代理 DeepSeek；它不属于 Runtime，也不支持 macOS、Linux 或运行时构建。当前支持 URP/HDRP，并可按当前管线能力修改时间、太阳、月亮、星空、雾、曝光和降雨字段；URP 不开放 HDRP 专属曝光字段。
 
 ### 目录与数据流
 
 - `Editor/LightingEditor/AI/UI/`：View1 面板、服务按钮、设置窗口和会话历史。
 - `Editor/LightingEditor/AI/Client/`：目标快照、请求构建、回环 HTTP、主线程调度和协议常量。
 - `Editor/LightingEditor/AI/Application/WeatherPresetPatchApplier.cs`：通过单个 Undo Group 原子应用已校验补丁。
-- `Editor/LightingEditor/AI/Validation/`：C# 二次严格解析和首版字段白名单。
+- `Editor/LightingEditor/AI/Validation/`：C# 二次严格解析和当前管线/目标字段白名单。
 - `Editor/LightingEditor/AI/Service/`：服务进程生命周期、当前用户 DPAPI Key 存储及 `Windows/DawnTodAiService.exe`。
 - `Editor/LightingEditor/AI/Service/Source/`：Python 服务、Provider、资源校验和测试；`build-service.ps1` 是唯一可复现的 EXE 构建入口。
 - `Editor/LightingEditor/AI/{Schemas,Skills,Prompts}/`：版本化 Schema、领域 Skill 和 System Prompt，三者共同约束模型输出。
 
-请求链路为：View1 面板 → Controller/Preset/时间快照 → 带会话令牌的 `127.0.0.1:13296` 服务 → DeepSeek → Python Schema 校验与一次修复 → C# 严格解析 → 单个 Undo Group 应用并刷新 View1/View3/Scene View。
+请求链路为：View1 面板 → Controller/Preset/管线能力与当前天气快照 → 带会话令牌的 `127.0.0.1:13296` 服务 → DeepSeek → Python Schema/本次能力白名单校验与一次修复 → C# 严格解析 → 单个 Undo Group 应用并刷新 View1/View3/Scene View。
 
 ### 不变量与安全边界
 
-- C# `DawnTodAiProtocol.cs` 与 Python `constants.py` 的端口、模式、服务版本、Schema 版本、会话头和支持字段必须同步。当前是 `deepseek`、服务版本 `2.0.0`、Schema `1.0`。
+- C# `DawnTodAiProtocol.cs` 与 Python `constants.py` 的端口、模式、服务版本、Schema 版本、会话头和支持字段必须同步。当前是 `deepseek`、服务版本 `2.1.0`、Schema `1.1`。
 - DeepSeek 调用固定官方 HTTPS 地址、`deepseek-v4-flash`、非 Thinking、JSON Output、`temperature = 0`、非流式；Provider 只对 429/5xx/连接或超时错误重试，401/403 不重试。
 - API Key 仅通过设置窗口写入 `%LOCALAPPDATA%\DawnTODAI\config.json` 的当前 Windows 用户 DPAPI 密文；不要把 Key 放入工程、测试夹具、命令行、日志、历史、Unity 请求正文或 Git。需要真实 API 验收时由用户在 Unity 设置窗口自行录入，不要在聊天中索取或回显 Key。
 - 本地日志位于 `%LOCALAPPDATA%\DawnTODAI\logs\service.log`，单个最大 5 MB，最多保留 10 个，并对 Key/Bearer 做脱敏。不得为了诊断而记录用户原文、原始模型响应或认证头。
 - Schema、Skill 或 Prompt 任何一个缺失、损坏或版本不一致时服务必须保持 Not Ready；不要绕开启动一致性校验或放宽 `additionalProperties = false`。
-- 请求必须继续使用捕获时的 Controller/Preset/时间快照；任务取消、目标/Preset 变化、非法或过期响应都不得产生部分修改。
+- 请求必须继续使用捕获时的 Controller/Preset/管线能力与天气快照；任务取消、目标/Preset/管线变化、非法或过期响应都不得产生部分修改。
 - EXE 使用 PyInstaller `--onefile`，会存在 bootloader 父进程和服务子进程。生命周期代码在确认可执行文件路径后用 `taskkill /T /F` 终止整棵树；不要退化为只调用父进程的 `Process.Kill()`，否则子进程会遗留端口和日志句柄。
 
 ### AI 改动的验证
@@ -155,8 +155,8 @@ DawnTODSystem（时间、控制器发现、时间段和天气混合）
    ```
 
    该脚本在隔离环境运行 Python 测试并重建 EXE；不要手工替换 EXE 或提交 Python 缓存。
-2. C#、协议、设置或生命周期改动后，在 Unity 2022.3 Windows URP 宿主运行 `DawnTOD.Editor.Tests` 与 `DawnTOD.Tests` 的 EditMode 测试。当前已验证基线为 Python `44/44`、Unity `86/86`。
-3. 真实 DeepSeek 验收需要用户授权 API 调用：选择含 `ActivePreset` 的 Controller，设置并保存 Key，启动服务至 `Ready`，发送“设置为正午。”、“把太阳强度改为 1.5。”等首版支持的指令，验证一次 `Ctrl+Z` 同时恢复 Controller 和 Preset。完成后停止服务；如不需保留 Key，先停止服务再在设置窗口 `Clear`。
+2. C#、协议、设置或生命周期改动后，在 Unity 2022.3 Windows URP 宿主运行 `DawnTOD.Editor.Tests` 与 `DawnTOD.Tests` 的 EditMode 测试。当前已验证基线为 Python `49/49`、Unity `86/86`。
+3. 真实 DeepSeek 验收需要用户授权 API 调用：选择含 `ActivePreset` 的 Controller，设置并保存 Key，启动服务至 `Ready`，发送“设置为正午。”、“把太阳强度改为 1.5。”、“设置为中雨。”和当前管线支持的雾/星空/曝光指令，验证一次 `Ctrl+Z` 同时恢复 Controller 和 Preset。完成后停止服务；如不需保留 Key，先停止服务再在设置窗口 `Clear`。
 
 ## 修改规则
 

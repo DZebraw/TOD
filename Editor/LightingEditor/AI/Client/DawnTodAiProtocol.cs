@@ -17,8 +17,8 @@ namespace DawnTODEditor.AI
         public const string ParentPidEnvironmentVariable = "DAWN_TOD_AI_PARENT_PID";
         public const string ConfigPathEnvironmentVariable = "DAWN_TOD_AI_CONFIG_PATH";
         public const string Mode = "deepseek";
-        public const string ServiceVersion = "2.0.0";
-        public const string SchemaVersion = "1.0";
+        public const string ServiceVersion = "2.1.0";
+        public const string SchemaVersion = "1.1";
         public const string DeepSeekBaseUrl = "https://api.deepseek.com";
         public const string DeepSeekModel = "deepseek-v4-flash";
 
@@ -32,7 +32,17 @@ namespace DawnTODEditor.AI
             "moon.azimuth_deg",
             "moon.elevation_deg",
             "moon.intensity",
-            "moon.color"
+            "moon.color",
+            "sky.star_emission",
+            "fog.mean_free_path_m",
+            "fog.base_height_m",
+            "fog.color",
+            "exposure.compensation_ev",
+            "rain.enabled",
+            "rain.precipitation_amount",
+            "rain.fall_speed",
+            "rain.density",
+            "rain.wind_z_rotation_deg"
         };
     }
 

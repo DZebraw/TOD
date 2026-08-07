@@ -11,15 +11,18 @@ namespace DawnTODEditor.AI
         public DawnWeatherController Controller { get; }
         public DawnWeatherPreset Preset { get; }
         public float CapturedHour { get; }
+        public WeatherRenderPipelineKind PipelineKind { get; }
 
         private WeatherIntentTargetSnapshot(
             DawnWeatherController controller,
             DawnWeatherPreset preset,
-            float capturedHour)
+            float capturedHour,
+            WeatherRenderPipelineKind pipelineKind)
         {
             Controller = controller;
             Preset = preset;
             CapturedHour = capturedHour;
+            PipelineKind = pipelineKind;
         }
 
         public static WeatherIntentTargetSnapshot Capture(
@@ -46,7 +49,8 @@ namespace DawnTODEditor.AI
             return new WeatherIntentTargetSnapshot(
                 controller,
                 controller.ActivePreset,
-                capturedHour);
+                capturedHour,
+                WeatherPipelineCapabilities.Current.PipelineKind);
         }
 
         private static bool IsValidHour(float hour)
@@ -147,6 +151,13 @@ namespace DawnTODEditor.AI
                 return WeatherIntentApplyResult.Failed("TARGET_CHANGED", targetError);
             }
 
+            if (!TryValidatePatchCapabilities(target, patch, out string capabilityError))
+            {
+                return WeatherIntentApplyResult.Failed(
+                    "UNSUPPORTED_FIELD",
+                    capabilityError);
+            }
+
             float targetHour = patch.Time.Mode == WeatherIntentTimeMode.Explicit
                 ? patch.Time.Hour.Value
                 : target.CapturedHour;
@@ -245,6 +256,47 @@ namespace DawnTODEditor.AI
                 return false;
             }
 
+            if (WeatherPipelineCapabilities.Current.PipelineKind != target.PipelineKind)
+            {
+                error = "The active render pipeline changed after the request was captured.";
+                return false;
+            }
+
+            error = null;
+            return true;
+        }
+
+        private static bool TryValidatePatchCapabilities(
+            WeatherIntentTargetSnapshot target,
+            WeatherIntentPatch patch,
+            out string error)
+        {
+            WeatherPipelineCapabilities capabilities =
+                WeatherPipelineCapabilities.ForKind(target.PipelineKind);
+            if (patch.Sky.HasChanges && !capabilities.SupportsStarEmission)
+            {
+                error = "Sky star emission is not supported by the captured render pipeline.";
+                return false;
+            }
+
+            if (patch.Fog.HasChanges && !capabilities.SupportsFog)
+            {
+                error = "Fog is not supported by the captured render pipeline.";
+                return false;
+            }
+
+            if (patch.Exposure.HasChanges && !capabilities.SupportsExposure)
+            {
+                error = "Exposure is not supported by the captured render pipeline.";
+                return false;
+            }
+
+            if (patch.Rain.HasChanges && !capabilities.SupportsRain)
+            {
+                error = "Rain is not supported by the captured render pipeline.";
+                return false;
+            }
+
             error = null;
             return true;
         }
@@ -283,7 +335,104 @@ namespace DawnTODEditor.AI
                 preset.moonColorGradient,
                 false);
 
+            PrepareCurvePatch(
+                prepared,
+                patch.Sky.StarEmission,
+                "sky.star_emission",
+                targetTime,
+                preset.starEmissionCurve,
+                keys => prepared.StarEmissionKeys = keys);
+
+            PrepareCurvePatch(
+                prepared,
+                patch.Fog.MeanFreePathMeters,
+                "fog.mean_free_path_m",
+                targetTime,
+                preset.fogDistanceCurve,
+                keys => prepared.FogDistanceKeys = keys);
+            PrepareCurvePatch(
+                prepared,
+                patch.Fog.BaseHeightMeters,
+                "fog.base_height_m",
+                targetTime,
+                preset.fogHeightCurve,
+                keys => prepared.FogHeightKeys = keys);
+            if (patch.Fog.Color != null)
+            {
+                if (preset.fogColorGradient == null)
+                {
+                    throw PatchApplicationException.MissingTarget("fog.color");
+                }
+
+                prepared.FogColor = PrepareGradient(
+                    preset.fogColorGradient,
+                    targetTime,
+                    patch.Fog.Color);
+                prepared.AppliedFields.Add("fog.color");
+            }
+
+            PrepareCurvePatch(
+                prepared,
+                patch.Exposure.CompensationEv,
+                "exposure.compensation_ev",
+                targetTime,
+                preset.exposureCompensationCurve,
+                keys => prepared.ExposureCompensationKeys = keys);
+
+            if (patch.Rain.Enabled.HasValue)
+            {
+                prepared.RainEnabled = patch.Rain.Enabled.Value;
+                prepared.AppliedFields.Add("rain.enabled");
+            }
+
+            PrepareCurvePatch(
+                prepared,
+                patch.Rain.PrecipitationAmount,
+                "rain.precipitation_amount",
+                targetTime,
+                preset.precipitationAmountCurve,
+                keys => prepared.PrecipitationAmountKeys = keys);
+            PrepareCurvePatch(
+                prepared,
+                patch.Rain.FallSpeed,
+                "rain.fall_speed",
+                targetTime,
+                preset.rainySpeedCurve,
+                keys => prepared.RainSpeedKeys = keys);
+            PrepareCurvePatch(
+                prepared,
+                patch.Rain.Density,
+                "rain.density",
+                targetTime,
+                preset.rainDensityCurve,
+                keys => prepared.RainDensityKeys = keys);
+            PrepareCurvePatch(
+                prepared,
+                patch.Rain.WindZRotationDegrees,
+                "rain.wind_z_rotation_deg",
+                targetTime,
+                preset.rainWindZRotationCurve,
+                keys => prepared.RainWindZRotationKeys = keys);
+
             return prepared;
+        }
+
+        private static void PrepareCurvePatch(
+            PreparedPatch prepared,
+            float? value,
+            string fieldPath,
+            float targetTime,
+            AnimationCurve curve,
+            Action<Keyframe[]> assignKeys)
+        {
+            if (!value.HasValue)
+            {
+                return;
+            }
+
+            RequireCurve(curve, fieldPath);
+            assignKeys(PrepareCurveKeys(curve, targetTime, value.Value));
+            prepared.AppliedFields.Add(fieldPath);
         }
 
         private static void PrepareLightPatch(
@@ -522,6 +671,16 @@ namespace DawnTODEditor.AI
             public Keyframe[] MoonElevationKeys;
             public Keyframe[] MoonIntensityKeys;
             public PreparedGradient MoonColor;
+            public Keyframe[] StarEmissionKeys;
+            public Keyframe[] FogDistanceKeys;
+            public Keyframe[] FogHeightKeys;
+            public PreparedGradient FogColor;
+            public Keyframe[] ExposureCompensationKeys;
+            public bool? RainEnabled;
+            public Keyframe[] PrecipitationAmountKeys;
+            public Keyframe[] RainSpeedKeys;
+            public Keyframe[] RainDensityKeys;
+            public Keyframe[] RainWindZRotationKeys;
 
             public void ApplyTo(DawnWeatherPreset preset)
             {
@@ -533,6 +692,25 @@ namespace DawnTODEditor.AI
                 ApplyCurveKeys(preset.moonElevationCurve, MoonElevationKeys);
                 ApplyCurveKeys(preset.moonIntensityCurve, MoonIntensityKeys);
                 ApplyGradient(preset.moonColorGradient, MoonColor);
+                ApplyCurveKeys(preset.starEmissionCurve, StarEmissionKeys);
+                ApplyCurveKeys(preset.fogDistanceCurve, FogDistanceKeys);
+                ApplyCurveKeys(preset.fogHeightCurve, FogHeightKeys);
+                ApplyGradient(preset.fogColorGradient, FogColor);
+                ApplyCurveKeys(
+                    preset.exposureCompensationCurve,
+                    ExposureCompensationKeys);
+                if (RainEnabled.HasValue)
+                {
+                    preset.rainyEnable = RainEnabled.Value;
+                }
+                ApplyCurveKeys(
+                    preset.precipitationAmountCurve,
+                    PrecipitationAmountKeys);
+                ApplyCurveKeys(preset.rainySpeedCurve, RainSpeedKeys);
+                ApplyCurveKeys(preset.rainDensityCurve, RainDensityKeys);
+                ApplyCurveKeys(
+                    preset.rainWindZRotationCurve,
+                    RainWindZRotationKeys);
             }
 
             private static void ApplyCurveKeys(AnimationCurve curve, Keyframe[] keys)

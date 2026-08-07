@@ -5,8 +5,8 @@ from typing import Final
 HOST: Final = "127.0.0.1"
 PORT: Final = 13296
 MODE: Final = "deepseek"
-SERVICE_VERSION: Final = "2.0.0"
-SCHEMA_VERSION: Final = "1.0"
+SERVICE_VERSION: Final = "2.1.0"
+SCHEMA_VERSION: Final = "1.1"
 SESSION_TOKEN_HEADER: Final = "X-DawnTOD-Session-Token"
 SESSION_TOKEN_ENV: Final = "DAWN_TOD_AI_SESSION_TOKEN"
 PARENT_PID_ENV: Final = "DAWN_TOD_AI_PARENT_PID"
@@ -26,7 +26,7 @@ LOG_FILE_NAME: Final = "service.log"
 LOG_MAX_BYTES: Final = 5 * 1024 * 1024
 LOG_BACKUP_COUNT: Final = 9
 
-SUPPORTED_NON_NULL_FIELDS: Final = (
+CORE_NON_NULL_FIELDS: Final = (
     "time",
     "sun.azimuth_deg",
     "sun.elevation_deg",
@@ -37,6 +37,28 @@ SUPPORTED_NON_NULL_FIELDS: Final = (
     "moon.intensity",
     "moon.color",
 )
+
+URP_NON_NULL_FIELDS: Final = CORE_NON_NULL_FIELDS + (
+    "sky.star_emission",
+    "fog.mean_free_path_m",
+    "fog.base_height_m",
+    "fog.color",
+    "rain.enabled",
+    "rain.precipitation_amount",
+    "rain.fall_speed",
+    "rain.density",
+    "rain.wind_z_rotation_deg",
+)
+
+HDRP_NON_NULL_FIELDS: Final = URP_NON_NULL_FIELDS + (
+    "exposure.compensation_ev",
+)
+
+SUPPORTED_NON_NULL_FIELDS: Final = HDRP_NON_NULL_FIELDS
+PIPELINE_NON_NULL_FIELDS: Final = {
+    "URP": frozenset(URP_NON_NULL_FIELDS),
+    "HDRP": frozenset(HDRP_NON_NULL_FIELDS),
+}
 
 # A known-valid document used only to verify the packaged Schema at startup and in tests.
 VALIDATION_PROBE_DATA: Final = {
@@ -54,17 +76,18 @@ VALIDATION_PROBE_DATA: Final = {
         "intensity": 0.2,
         "color": {"r": 0.7, "g": 0.8, "b": 1.0, "a": 1.0},
     },
-    "sky": {"star_emission": None},
+    "sky": {"star_emission": 1000.0},
     "fog": {
-        "mean_free_path_m": None,
-        "base_height_m": None,
-        "color": None,
+        "mean_free_path_m": 500.0,
+        "base_height_m": 0.02,
+        "color": {"r": 0.7, "g": 0.8, "b": 0.9, "a": 1.0},
     },
-    "exposure": {"compensation_ev": None},
+    "exposure": {"compensation_ev": 0.0},
     "rain": {
-        "enabled": None,
-        "fall_speed": None,
-        "density": None,
-        "wind_z_rotation_deg": None,
+        "enabled": True,
+        "precipitation_amount": 0.6,
+        "fall_speed": 40.0,
+        "density": 1.0,
+        "wind_z_rotation_deg": 15.0,
     },
 }

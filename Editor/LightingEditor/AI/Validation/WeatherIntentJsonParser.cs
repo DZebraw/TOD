@@ -52,7 +52,10 @@ namespace DawnTODEditor.AI
         private static readonly string[] SkyFields = { "star_emission" };
         private static readonly string[] FogFields = { "mean_free_path_m", "base_height_m", "color" };
         private static readonly string[] ExposureFields = { "compensation_ev" };
-        private static readonly string[] RainFields = { "enabled", "fall_speed", "density", "wind_z_rotation_deg" };
+        private static readonly string[] RainFields =
+        {
+            "enabled", "precipitation_amount", "fall_speed", "density", "wind_z_rotation_deg"
+        };
 
         public static WeatherIntentParseResult Parse(string json)
         {
@@ -92,14 +95,21 @@ namespace DawnTODEditor.AI
                 WeatherIntentTimePatch time = ParseTime(root["time"]);
                 WeatherIntentLightPatch sun = ParseLight(root["sun"], "$.sun");
                 WeatherIntentLightPatch moon = ParseLight(root["moon"], "$.moon");
-
-                ValidateReservedObject(root["sky"], "$.sky", SkyFields);
-                ValidateReservedObject(root["fog"], "$.fog", FogFields);
-                ValidateReservedObject(root["exposure"], "$.exposure", ExposureFields);
-                ValidateReservedObject(root["rain"], "$.rain", RainFields);
+                WeatherIntentSkyPatch sky = ParseSky(root["sky"]);
+                WeatherIntentFogPatch fog = ParseFog(root["fog"]);
+                WeatherIntentExposurePatch exposure = ParseExposure(root["exposure"]);
+                WeatherIntentRainPatch rain = ParseRain(root["rain"]);
 
                 return WeatherIntentParseResult.Success(
-                    new WeatherIntentPatch(schemaVersion, time, sun, moon));
+                    new WeatherIntentPatch(
+                        schemaVersion,
+                        time,
+                        sun,
+                        moon,
+                        sky,
+                        fog,
+                        exposure,
+                        rain));
             }
             catch (ValidationFailure exception)
             {
@@ -151,7 +161,7 @@ namespace DawnTODEditor.AI
             float? elevation = ReadNumber(
                 light["elevation_deg"], path + ".elevation_deg", -90d, true, 90d, true, true);
             float? intensity = ReadNumber(
-                light["intensity"], path + ".intensity", 0d, true, 8d, true, true);
+                light["intensity"], path + ".intensity", 0d, true, float.MaxValue, true, true);
             WeatherIntentColor color = ParseColor(light["color"], path + ".color");
 
             return new WeatherIntentLightPatch(azimuth, elevation, intensity, color);
@@ -174,20 +184,102 @@ namespace DawnTODEditor.AI
             return new WeatherIntentColor(r, g, b, a);
         }
 
-        private static void ValidateReservedObject(JToken token, string path, IReadOnlyList<string> fields)
+        private static WeatherIntentSkyPatch ParseSky(JToken token)
         {
-            JObject reservedObject = RequireObject(token, path, "Reserved capability must be an object.");
-            ValidateShape(reservedObject, path, fields);
+            const string path = "$.sky";
+            JObject sky = RequireObject(token, path, "Sky patch must be an object.");
+            ValidateShape(sky, path, SkyFields);
+            return new WeatherIntentSkyPatch(
+                ReadNumber(
+                    sky["star_emission"],
+                    path + ".star_emission",
+                    0d,
+                    true,
+                    1000d,
+                    true,
+                    true));
+        }
 
-            for (int i = 0; i < fields.Count; i++)
-            {
-                string field = fields[i];
-                RequireNull(
-                    reservedObject[field],
-                    path + "." + field,
-                    "This field is not supported by the first-version capability whitelist.",
-                    "UNSUPPORTED_FIELD");
-            }
+        private static WeatherIntentFogPatch ParseFog(JToken token)
+        {
+            const string path = "$.fog";
+            JObject fog = RequireObject(token, path, "Fog patch must be an object.");
+            ValidateShape(fog, path, FogFields);
+            float? meanFreePath = ReadNumber(
+                fog["mean_free_path_m"],
+                path + ".mean_free_path_m",
+                0.01d,
+                true,
+                float.MaxValue,
+                true,
+                true);
+            float? baseHeight = ReadNumber(
+                fog["base_height_m"],
+                path + ".base_height_m",
+                -float.MaxValue,
+                true,
+                float.MaxValue,
+                true,
+                true);
+            WeatherIntentColor color = ParseColor(fog["color"], path + ".color");
+            return new WeatherIntentFogPatch(meanFreePath, baseHeight, color);
+        }
+
+        private static WeatherIntentExposurePatch ParseExposure(JToken token)
+        {
+            const string path = "$.exposure";
+            JObject exposure = RequireObject(token, path, "Exposure patch must be an object.");
+            ValidateShape(exposure, path, ExposureFields);
+            return new WeatherIntentExposurePatch(
+                ReadNumber(
+                    exposure["compensation_ev"],
+                    path + ".compensation_ev",
+                    -float.MaxValue,
+                    true,
+                    float.MaxValue,
+                    true,
+                    true));
+        }
+
+        private static WeatherIntentRainPatch ParseRain(JToken token)
+        {
+            const string path = "$.rain";
+            JObject rain = RequireObject(token, path, "Rain patch must be an object.");
+            ValidateShape(rain, path, RainFields);
+            return new WeatherIntentRainPatch(
+                ReadBoolean(rain["enabled"], path + ".enabled", true),
+                ReadNumber(
+                    rain["precipitation_amount"],
+                    path + ".precipitation_amount",
+                    0d,
+                    true,
+                    1d,
+                    true,
+                    true),
+                ReadNumber(
+                    rain["fall_speed"],
+                    path + ".fall_speed",
+                    0d,
+                    true,
+                    float.MaxValue,
+                    true,
+                    true),
+                ReadNumber(
+                    rain["density"],
+                    path + ".density",
+                    0d,
+                    true,
+                    float.MaxValue,
+                    true,
+                    true),
+                ReadNumber(
+                    rain["wind_z_rotation_deg"],
+                    path + ".wind_z_rotation_deg",
+                    -45d,
+                    true,
+                    45d,
+                    true,
+                    true));
         }
 
         private static void ValidateShape(JObject value, string path, IReadOnlyList<string> expectedFields)
@@ -280,7 +372,38 @@ namespace DawnTODEditor.AI
                 throw ValidationFailure.Invalid("OUT_OF_RANGE", path, "Number is outside the supported range.");
             }
 
-            return (float)value;
+            float converted = (float)value;
+            if (float.IsNaN(converted) || float.IsInfinity(converted))
+            {
+                throw ValidationFailure.Invalid("INVALID_NUMBER", path, "Number must fit in a finite Unity float.");
+            }
+
+            return converted;
+        }
+
+        private static bool? ReadBoolean(JToken token, string path, bool nullable)
+        {
+            if (token == null)
+            {
+                throw ValidationFailure.Invalid("MISSING_FIELD", path, "Required field is missing.");
+            }
+
+            if (token.Type == JTokenType.Null)
+            {
+                if (nullable)
+                {
+                    return null;
+                }
+
+                throw ValidationFailure.Invalid("INVALID_TYPE", path, "Expected a boolean.");
+            }
+
+            if (token.Type != JTokenType.Boolean)
+            {
+                throw ValidationFailure.Invalid("INVALID_TYPE", path, "Expected a boolean or null.");
+            }
+
+            return token.Value<bool>();
         }
 
         private static void RequireNull(JToken token, string path, string message, string code)

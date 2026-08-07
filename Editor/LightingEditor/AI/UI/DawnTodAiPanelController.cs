@@ -110,6 +110,13 @@ namespace DawnTODEditor.AI
                 return false;
             }
 
+            if (WeatherPipelineCapabilities.Current.PipelineKind ==
+                WeatherRenderPipelineKind.Unknown)
+            {
+                reason = "The AI assistant requires an active URP or HDRP render pipeline.";
+                return false;
+            }
+
             if (!IsValidHour(capturedHour))
             {
                 reason = "The current Lighting Editor time is invalid.";
@@ -124,7 +131,7 @@ namespace DawnTODEditor.AI
 
             if (string.IsNullOrWhiteSpace(userInput))
             {
-                reason = "Enter a natural-language lighting instruction.";
+                reason = "Enter a natural-language time or weather instruction.";
                 return false;
             }
 

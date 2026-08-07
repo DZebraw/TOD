@@ -44,7 +44,12 @@ class WeatherIntentEngine:
     async def analyze(self, request: AnalyzeRequest) -> IntentEngineResult:
         messages = _analysis_messages(request, self._resources)
         first = await self._provider.complete(messages)
-        data, issues = validate_model_json(first.content, self._resources)
+        supported_fields = frozenset(request.capabilities.supported_non_null_fields)
+        data, issues = validate_model_json(
+            first.content,
+            self._resources,
+            supported_fields,
+        )
         if data is not None:
             return IntentEngineResult(data, first.retry_count, 0)
 
@@ -70,6 +75,7 @@ class WeatherIntentEngine:
         repaired_data, repaired_issues = validate_model_json(
             repaired.content,
             self._resources,
+            supported_fields,
         )
         retry_count = first.retry_count + repaired.retry_count
         if repaired_data is None:
@@ -80,6 +86,7 @@ class WeatherIntentEngine:
 def validate_model_json(
     raw: str,
     resources: ResourceBundle,
+    supported_non_null_fields: frozenset[str] | None = None,
 ) -> tuple[dict[str, Any] | None, tuple[ValidationIssue, ...]]:
     try:
         value = json.loads(
@@ -106,7 +113,22 @@ def validate_model_json(
         key=lambda error: tuple(str(part) for part in error.absolute_path),
     )
     if not schema_errors:
-        return value, ()
+        if supported_non_null_fields is None:
+            return value, ()
+
+        unsupported = sorted(
+            _non_null_fields(value).difference(supported_non_null_fields)
+        )
+        if not unsupported:
+            return value, ()
+        return None, tuple(
+            ValidationIssue(
+                "$." + field,
+                "capability",
+                "The field is not available for this pipeline or target preset.",
+            )
+            for field in unsupported
+        )
 
     issues = tuple(
         ValidationIssue(
@@ -146,6 +168,23 @@ def _analysis_messages(
         {"role": "system", "content": system_content},
         {"role": "user", "content": request_content},
     ]
+
+
+def _non_null_fields(value: dict[str, Any]) -> set[str]:
+    fields: set[str] = set()
+    if value["time"]["mode"] == "explicit":
+        fields.add("time")
+
+    for light_name in ("sun", "moon"):
+        for leaf_name, leaf_value in value[light_name].items():
+            if leaf_value is not None:
+                fields.add(f"{light_name}.{leaf_name}")
+
+    for group_name in ("sky", "fog", "exposure", "rain"):
+        for leaf_name, leaf_value in value[group_name].items():
+            if leaf_value is not None:
+                fields.add(f"{group_name}.{leaf_name}")
+    return fields
 
 
 def _object_without_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:

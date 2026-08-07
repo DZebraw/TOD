@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://dawntod.local/schemas/weather-intent-v1.schema.json",
-  "title": "DawnTOD Weather Intent Patch v1",
+  "title": "DawnTOD Weather Intent Patch v1.1",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -16,7 +16,7 @@
   ],
   "properties": {
     "schema_version": {
-      "const": "1.0"
+      "const": "1.1"
     },
     "time": {
       "oneOf": [
@@ -51,7 +51,11 @@
       "additionalProperties": false,
       "required": ["star_emission"],
       "properties": {
-        "star_emission": { "type": "null" }
+        "star_emission": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1000
+        }
       }
     },
     "fog": {
@@ -59,9 +63,9 @@
       "additionalProperties": false,
       "required": ["mean_free_path_m", "base_height_m", "color"],
       "properties": {
-        "mean_free_path_m": { "type": "null" },
-        "base_height_m": { "type": "null" },
-        "color": { "type": "null" }
+        "mean_free_path_m": { "$ref": "#/$defs/nullablePositive" },
+        "base_height_m": { "$ref": "#/$defs/nullableNumber" },
+        "color": { "$ref": "#/$defs/nullableColor" }
       }
     },
     "exposure": {
@@ -69,22 +73,48 @@
       "additionalProperties": false,
       "required": ["compensation_ev"],
       "properties": {
-        "compensation_ev": { "type": "null" }
+        "compensation_ev": { "$ref": "#/$defs/nullableNumber" }
       }
     },
     "rain": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["enabled", "fall_speed", "density", "wind_z_rotation_deg"],
+      "required": [
+        "enabled",
+        "precipitation_amount",
+        "fall_speed",
+        "density",
+        "wind_z_rotation_deg"
+      ],
       "properties": {
-        "enabled": { "type": "null" },
-        "fall_speed": { "type": "null" },
-        "density": { "type": "null" },
-        "wind_z_rotation_deg": { "type": "null" }
+        "enabled": { "type": ["boolean", "null"] },
+        "precipitation_amount": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1
+        },
+        "fall_speed": { "$ref": "#/$defs/nullableNonNegative" },
+        "density": { "$ref": "#/$defs/nullableNonNegative" },
+        "wind_z_rotation_deg": {
+          "type": ["number", "null"],
+          "minimum": -45,
+          "maximum": 45
+        }
       }
     }
   },
   "$defs": {
+    "nullableNumber": {
+      "type": ["number", "null"]
+    },
+    "nullablePositive": {
+      "type": ["number", "null"],
+      "minimum": 0.01
+    },
+    "nullableNonNegative": {
+      "type": ["number", "null"],
+      "minimum": 0
+    },
     "nullableAzimuth": {
       "type": ["number", "null"],
       "minimum": 0,
@@ -94,11 +124,6 @@
       "type": ["number", "null"],
       "minimum": -90,
       "maximum": 90
-    },
-    "nullableIntensity": {
-      "type": ["number", "null"],
-      "minimum": 0,
-      "maximum": 8
     },
     "color": {
       "type": "object",
@@ -111,6 +136,12 @@
         "a": { "type": "number", "minimum": 0, "maximum": 1 }
       }
     },
+    "nullableColor": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/color" }
+      ]
+    },
     "lightPatch": {
       "type": "object",
       "additionalProperties": false,
@@ -118,13 +149,8 @@
       "properties": {
         "azimuth_deg": { "$ref": "#/$defs/nullableAzimuth" },
         "elevation_deg": { "$ref": "#/$defs/nullableElevation" },
-        "intensity": { "$ref": "#/$defs/nullableIntensity" },
-        "color": {
-          "oneOf": [
-            { "type": "null" },
-            { "$ref": "#/$defs/color" }
-          ]
-        }
+        "intensity": { "$ref": "#/$defs/nullableNonNegative" },
+        "color": { "$ref": "#/$defs/nullableColor" }
       }
     }
   }

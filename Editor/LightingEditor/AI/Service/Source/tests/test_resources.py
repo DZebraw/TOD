@@ -46,7 +46,7 @@ def test_missing_versioned_resource_is_not_ready(tmp_path, relative_path: str, e
 def test_resource_version_mismatch_is_not_ready(tmp_path, relative_path: str, error_code: str):
     copy_resources(tmp_path)
     path = tmp_path / relative_path
-    path.write_text(path.read_text(encoding="utf-8").replace('schema_version: "1.0"', 'schema_version: "2.0"'), encoding="utf-8")
+    path.write_text(path.read_text(encoding="utf-8").replace('schema_version: "1.1"', 'schema_version: "2.0"'), encoding="utf-8")
 
     resources = load_resources(tmp_path)
 
@@ -73,11 +73,14 @@ def test_schema_version_mismatch_is_not_ready(tmp_path):
         lambda value: value.pop("rain"),
         lambda value: value.update(extra=True),
         lambda value: value["sun"].update(intensity="2.0"),
-        lambda value: value["sun"].update(intensity=8.01),
-        lambda value: value["fog"].update(color={"r": 1, "g": 1, "b": 1, "a": 1}),
+        lambda value: value["sun"].update(intensity=-0.01),
+        lambda value: value["sky"].update(star_emission=1000.01),
+        lambda value: value["fog"].update(mean_free_path_m=0.009),
+        lambda value: value["fog"].update(color={"r": 1.01, "g": 1, "b": 1, "a": 1}),
+        lambda value: value["rain"].pop("precipitation_amount"),
     ],
 )
-def test_python_schema_validator_rejects_invalid_or_reserved_data(mutate):
+def test_python_schema_validator_rejects_invalid_current_data(mutate):
     resources = load_resources(AI_ROOT)
     value = copy.deepcopy(VALIDATION_PROBE_DATA)
     mutate(value)

@@ -131,6 +131,10 @@ namespace DawnTODEditor.AI
             GUILayout.Label("Service", GUILayout.Width(72f));
             DrawServiceStatus();
             GUILayout.Label("Mode: " + DawnTodAiProtocol.Mode, EditorStyles.miniLabel, GUILayout.Width(104f));
+            GUILayout.Label(
+                "Pipeline: " + GetPipelineLabel(),
+                EditorStyles.miniLabel,
+                GUILayout.Width(94f));
             GUILayout.FlexibleSpace();
             DrawServiceButtons();
             EditorGUILayout.EndHorizontal();
@@ -548,6 +552,19 @@ namespace DawnTODEditor.AI
             }
 
             return path;
+        }
+
+        private static string GetPipelineLabel()
+        {
+            switch (WeatherPipelineCapabilities.Current.PipelineKind)
+            {
+                case WeatherRenderPipelineKind.Universal:
+                    return "URP";
+                case WeatherRenderPipelineKind.HighDefinition:
+                    return "HDRP";
+                default:
+                    return "Unsupported";
+            }
         }
 
         private static string FormatHour(float hour)

@@ -6,7 +6,7 @@ import json
 import pytest
 
 from dawn_tod_ai_service.contracts import AnalyzeRequest
-from dawn_tod_ai_service.constants import VALIDATION_PROBE_DATA
+from dawn_tod_ai_service.constants import SCHEMA_VERSION, VALIDATION_PROBE_DATA
 from dawn_tod_ai_service.intent_engine import (
     IntentEngineError,
     WeatherIntentEngine,
@@ -35,7 +35,7 @@ async def test_single_turn_prompt_contains_snapshot_skill_schema_and_untrusted_i
 @pytest.mark.asyncio
 async def test_invalid_model_output_is_repaired_exactly_once():
     provider = FakeProvider([
-        '{"schema_version":"1.0"}',
+        json.dumps({"schema_version": SCHEMA_VERSION}),
         json.dumps(VALIDATION_PROBE_DATA),
     ])
     engine = WeatherIntentEngine(provider, load_resources(AI_ROOT))
@@ -50,7 +50,10 @@ async def test_invalid_model_output_is_repaired_exactly_once():
 
 @pytest.mark.asyncio
 async def test_second_invalid_output_returns_no_partial_result():
-    provider = FakeProvider(['{"schema_version":"1.0"}', '{"extra":true}'])
+    provider = FakeProvider([
+        json.dumps({"schema_version": SCHEMA_VERSION}),
+        '{"extra":true}',
+    ])
     engine = WeatherIntentEngine(provider, load_resources(AI_ROOT))
 
     with pytest.raises(IntentEngineError) as captured:
@@ -60,17 +63,24 @@ async def test_second_invalid_output_returns_no_partial_result():
     assert len(provider.calls) == 2
 
 
-def test_duplicate_fields_and_reserved_non_null_fields_are_rejected():
+def test_duplicate_fields_and_fields_outside_request_capabilities_are_rejected():
     resources = load_resources(AI_ROOT)
     duplicate, duplicate_errors = validate_model_json(
-        '{"schema_version":"1.0","schema_version":"1.0"}',
+        (
+            '{"schema_version":"%s","schema_version":"%s"}'
+            % (SCHEMA_VERSION, SCHEMA_VERSION)
+        ),
         resources,
     )
-    reserved = copy.deepcopy(VALIDATION_PROBE_DATA)
-    reserved["fog"]["color"] = {"r": 1, "g": 1, "b": 1, "a": 1}
-    reserved_value, reserved_errors = validate_model_json(json.dumps(reserved), resources)
+    restricted = copy.deepcopy(VALIDATION_PROBE_DATA)
+    restricted_value, restricted_errors = validate_model_json(
+        json.dumps(restricted),
+        resources,
+        frozenset({"time"}),
+    )
 
     assert duplicate is None
     assert duplicate_errors[0].rule == "json"
-    assert reserved_value is None
-    assert reserved_errors
+    assert restricted_value is None
+    assert restricted_errors
+    assert all(error.rule == "capability" for error in restricted_errors)
