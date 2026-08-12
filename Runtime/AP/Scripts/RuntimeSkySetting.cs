@@ -5,6 +5,7 @@ using Unity.Collections;
 using UnityEngine;
 
 using UnityEngine.Rendering;
+using UnityEngine.Rendering.Universal;
 namespace DawnTOD
 {
     [ExecuteInEditMode]
@@ -138,6 +139,7 @@ namespace DawnTOD
         private int m_AmbientReadbackGeneration;
 
         private Camera m_Camera;
+        private VolumeStack m_AtmosphereVolumeStack;
         [NonSerialized]
         private Vector3[] m_FrustumCorners =
             new Vector3[FrustumCornerCount];
@@ -277,11 +279,41 @@ namespace DawnTOD
             ApplySpaceParams(GetActiveAtmosphereVolume());
         }
 
-        private static DawnAtmosphereVolume GetActiveAtmosphereVolume()
+        private DawnAtmosphereVolume GetActiveAtmosphereVolume()
         {
 #if DAWNTOD_URP_AVAILABLE
-            VolumeStack stack = VolumeManager.instance.stack;
-            return stack != null ? stack.GetComponent<DawnAtmosphereVolume>() : null;
+            Camera mainCamera = Camera.main;
+            if (m_Camera != mainCamera)
+            {
+                m_Camera = mainCamera;
+            }
+
+            Transform volumeTrigger = m_Camera != null
+                ? m_Camera.transform
+                : null;
+            LayerMask volumeLayerMask = 1;
+            if (m_Camera != null &&
+                m_Camera.TryGetComponent(
+                    out UniversalAdditionalCameraData cameraData))
+            {
+                volumeLayerMask = cameraData.volumeLayerMask;
+                if (cameraData.volumeTrigger != null)
+                {
+                    volumeTrigger = cameraData.volumeTrigger;
+                }
+            }
+
+            VolumeManager volumeManager = VolumeManager.instance;
+            if (m_AtmosphereVolumeStack == null)
+            {
+                m_AtmosphereVolumeStack = volumeManager.CreateStack();
+            }
+
+            volumeManager.Update(
+                m_AtmosphereVolumeStack,
+                volumeTrigger,
+                volumeLayerMask);
+            return m_AtmosphereVolumeStack.GetComponent<DawnAtmosphereVolume>();
 #else
             return null;
 #endif
@@ -787,6 +819,7 @@ namespace DawnTOD
             SuspendPipelineOutput();
             m_AmbientReadbackGeneration++;
             m_AmbientReadbackPending = false;
+            ReleaseAtmosphereVolumeStack();
             ReleaseRenderTexture(ref m_IntegrateCPDensityLUT);
             ReleaseRenderTexture(ref m_SunOnSurfaceLUT);
             ReleaseRenderTexture(ref m_AmbientLUT);
@@ -862,6 +895,17 @@ namespace DawnTOD
 #endif
             Destroy(renderTexture);
             renderTexture = null;
+        }
+
+        private void ReleaseAtmosphereVolumeStack()
+        {
+            if (m_AtmosphereVolumeStack == null)
+            {
+                return;
+            }
+
+            VolumeManager.instance.DestroyStack(m_AtmosphereVolumeStack);
+            m_AtmosphereVolumeStack = null;
         }
 
 
