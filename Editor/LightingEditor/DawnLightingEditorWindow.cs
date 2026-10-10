@@ -2,7 +2,6 @@ using System.Collections.Generic;
 using UnityEngine;
 using UnityEditor;
 using DawnTOD;
-using DawnTODEditor.AI;
 
 namespace DawnTODEditor
 {
@@ -21,7 +20,6 @@ namespace DawnTODEditor
         private LightingEditorState _state;
 
         private TrackManager _trackManager;
-        private DawnTodAiPanel _aiPanel;
 
         // ========== 目标引用 ==========
         private DawnWeatherController _selectedController;
@@ -99,14 +97,6 @@ namespace DawnTODEditor
                 Repaint();
             }, MIN_OUTLINER_WIDTH);
 
-            DawnTodAiServiceManager aiService = DawnTodAiServiceManager.Shared;
-            _aiPanel = new DawnTodAiPanel(
-                aiService,
-                new DawnTodAiRequestCoordinator(
-                    aiService,
-                    new DawnTodAiMainThreadDispatcher()),
-                Repaint);
-
             LoadViewLevelFromPrefs();
             RefreshControllerList();
             EditorApplication.update += OnEditorUpdate;
@@ -125,8 +115,6 @@ namespace DawnTODEditor
             _trackOutlinerDrawer?.Dispose();
             _splitterDrawer?.Dispose();
             _modeTabDrawer?.Dispose();
-            _aiPanel?.Dispose();
-            _aiPanel = null;
 
             SaveViewLevelToPrefs();
         }
@@ -139,11 +127,6 @@ namespace DawnTODEditor
 
         private void OnSelectionChanged()
         {
-            if (_aiPanel?.HasActiveRequest == true)
-            {
-                return;
-            }
-
             // 检查选中的对象是否包含TODController
             var go = Selection.activeGameObject;
             if (go != null)
@@ -231,11 +214,7 @@ namespace DawnTODEditor
                 EditorGUILayout.Space(1);
                 EditorDrawingUtility.DrawHorizontalLine();
 
-                if (_state.CurrentViewLevel == ViewLevel.Level1_Playback)
-                {
-                    DrawAiAssistantArea();
-                }
-                else if (_state.CurrentViewLevel == ViewLevel.Level3_CurveEditor)
+                if (_state.CurrentViewLevel == ViewLevel.Level3_CurveEditor)
                 {
                     DrawMainEditorArea();
                 }
@@ -264,19 +243,6 @@ namespace DawnTODEditor
         }
 
         // ========== 主编辑区域 ==========
-        private void DrawAiAssistantArea()
-        {
-            Rect mainRect = ReserveMainAreaRect();
-            float capturedHour = Mathf.Repeat(_state.CurrentTime * 24f, 24f);
-            _aiPanel?.Draw(
-                mainRect,
-                _selectedController,
-                capturedHour,
-                OnControllerSelected,
-                PauseForAiRequest,
-                OnAiPatchApplied);
-        }
-
         private void DrawEmptyMainArea()
         {
             ReserveMainAreaRect();
@@ -626,11 +592,6 @@ namespace DawnTODEditor
         /// </summary>
         private void OnControllerSelected(DawnWeatherController controller)
         {
-            if (_aiPanel?.HasActiveRequest == true)
-            {
-                return;
-            }
-
             SetSelectedController(controller);
         }
 
@@ -648,12 +609,6 @@ namespace DawnTODEditor
         /// </summary>
         private void OnViewLevelChanged(ViewLevel level)
         {
-            if (_aiPanel?.HasActiveRequest == true &&
-                _state.CurrentViewLevel == ViewLevel.Level1_Playback)
-            {
-                return;
-            }
-
             SetViewLevel(level);
         }
 
@@ -669,38 +624,11 @@ namespace DawnTODEditor
         
         #endregion
 
-        #region AI Assistant
-
-        private void PauseForAiRequest()
-        {
-            _state.Playback.State = PlaybackState.Stopped;
-            lastUpdateTime = Time.realtimeSinceStartup;
-            Repaint();
-        }
-
-        private void OnAiPatchApplied(DawnTodAiAnalyzeResult result)
-        {
-            WeatherIntentApplyResult applyResult = result.ApplyResult;
-            if (applyResult == null || !applyResult.DidApply)
-            {
-                return;
-            }
-
-            _state.Playback.State = PlaybackState.Stopped;
-            _state.CurrentTime = Mathf.Repeat(applyResult.TargetHour, 24f) / 24f;
-            _activePreset = _selectedController != null
-                ? _selectedController.ActivePreset
-                : null;
-            UpdateActivePresetReferences();
-            _selectedController?.Refresh();
-            RefreshTracks();
-            SceneView.RepaintAll();
-            Repaint();
-        }
+        #region 目标同步
 
         private void SynchronizeHierarchySelection()
         {
-            if (_aiPanel?.HasActiveRequest == true || Selection.activeGameObject == null)
+            if (Selection.activeGameObject == null)
             {
                 return;
             }
@@ -715,7 +643,7 @@ namespace DawnTODEditor
 
         private void SynchronizeActivePreset()
         {
-            if (_aiPanel?.HasActiveRequest == true || _selectedController == null)
+            if (_selectedController == null)
             {
                 return;
             }

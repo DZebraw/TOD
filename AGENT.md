@@ -13,7 +13,7 @@
 - Unity 基线：`2022.3`
 - 包类型：Unity Package Manager（UPM）插件
 - 当前仓库是插件包根目录，不是完整 Unity 工程；仓库中没有宿主项目的 `ProjectSettings`、场景和完整 `Assets` 目录。
-- `package.json` 当前只显式依赖 `com.unity.nuget.newtonsoft-json`。不要未经必要性评估就引入新的外部依赖。
+- `package.json` 当前没有显式的外部依赖。不要未经必要性评估就引入新的外部依赖。
 
 `.LinkUnity.bat` 用于把本仓库链接到宿主 Unity 工程的 `Packages/com.tencent.dawn.tod`。它会请求管理员权限，并在目标目录下创建目录符号链接；涉及链接或 Unity 编译时应使用一个实际的 Unity 2022.3 宿主工程。
 
@@ -31,7 +31,6 @@
 | `Runtime/Resources/`、`Runtime/Shader/` | 降雨粒子计算、默认 Prefab/Material 和渲染 | 改 C# 参数时要同步检查 Shader/Compute Shader 属性 |
 | `Runtime/Resources/Textures/`、`Texture/` | 包内运行时纹理和天空/月亮纹理 | Unity 资源必须保留对应 `.meta` |
 | `Editor/` | Unity 编辑器 Inspector、Hierarchy 菜单、Lighting Editor | 仅编辑器代码，主要命名空间为 `DawnTODEditor` |
-| `Editor/LightingEditor/AI/` | View1 自然语言天气助手、协议、服务、Prompt/Skill/Schema | 仅 Windows Unity Editor；字段消费必须受当前管线和目标资源能力白名单约束 |
 | `package.json` | UPM 包元数据 | 修改包名、版本或 Unity 基线需谨慎评估兼容性 |
 
 程序集边界由以下文件定义：
@@ -120,44 +119,6 @@ DawnTODSystem（时间、控制器发现、时间段和天气混合）
 
 自定义 Inspector 和 Lighting Editor 会通过 `SerializedObject`/`SerializedProperty` 编辑曲线、渐变和组件字段，并可能调用 `Refresh()`、`SceneView.RepaintAll()`、`EditorUtility.SetDirty()`。修改这些逻辑时要检查 Undo、编辑器重绘频率、资产保存、Scene View 预览和播放模式行为，避免在每帧产生不必要的 dirty 或刷新。
 
-## AI 自然语言天气模块
-
-该模块嵌入 Lighting Editor View1，使用本地 Windows EXE 代理 DeepSeek；它不属于 Runtime，也不支持 macOS、Linux 或运行时构建。当前支持 URP/HDRP，并可按当前管线能力修改时间、太阳、月亮、星空、雾、曝光和降雨字段；URP 不开放 HDRP 专属曝光字段。
-
-### 目录与数据流
-
-- `Editor/LightingEditor/AI/UI/`：View1 面板、服务按钮、设置窗口和会话历史。
-- `Editor/LightingEditor/AI/Client/`：目标快照、请求构建、回环 HTTP、主线程调度和协议常量。
-- `Editor/LightingEditor/AI/Application/WeatherPresetPatchApplier.cs`：通过单个 Undo Group 原子应用已校验补丁。
-- `Editor/LightingEditor/AI/Validation/`：C# 二次严格解析和当前管线/目标字段白名单。
-- `Editor/LightingEditor/AI/Service/`：服务进程生命周期、当前用户 DPAPI Key 存储及 `Windows/DawnTodAiService.exe`。
-- `Editor/LightingEditor/AI/Service/Source/`：Python 服务、Provider、资源校验和测试；`build-service.ps1` 是唯一可复现的 EXE 构建入口。
-- `Editor/LightingEditor/AI/{Schemas,Skills,Prompts}/`：版本化 Schema、领域 Skill 和 System Prompt，三者共同约束模型输出。
-
-请求链路为：View1 面板 → Controller/Preset/管线能力与当前天气快照 → 带会话令牌的 `127.0.0.1:13296` 服务 → DeepSeek → Python Schema/本次能力白名单校验与一次修复 → C# 严格解析 → 单个 Undo Group 应用并刷新 View1/View3/Scene View。
-
-### 不变量与安全边界
-
-- C# `DawnTodAiProtocol.cs` 与 Python `constants.py` 的端口、模式、服务版本、Schema 版本、会话头和支持字段必须同步。当前是 `deepseek`、服务版本 `2.1.0`、Schema `1.1`。
-- DeepSeek 调用固定官方 HTTPS 地址、`deepseek-v4-flash`、非 Thinking、JSON Output、`temperature = 0`、非流式；Provider 只对 429/5xx/连接或超时错误重试，401/403 不重试。
-- API Key 仅通过设置窗口写入 `%LOCALAPPDATA%\DawnTODAI\config.json` 的当前 Windows 用户 DPAPI 密文；不要把 Key 放入工程、测试夹具、命令行、日志、历史、Unity 请求正文或 Git。需要真实 API 验收时由用户在 Unity 设置窗口自行录入，不要在聊天中索取或回显 Key。
-- 本地日志位于 `%LOCALAPPDATA%\DawnTODAI\logs\service.log`，单个最大 5 MB，最多保留 10 个，并对 Key/Bearer 做脱敏。不得为了诊断而记录用户原文、原始模型响应或认证头。
-- Schema、Skill 或 Prompt 任何一个缺失、损坏或版本不一致时服务必须保持 Not Ready；不要绕开启动一致性校验或放宽 `additionalProperties = false`。
-- 请求必须继续使用捕获时的 Controller/Preset/管线能力与天气快照；任务取消、目标/Preset/管线变化、非法或过期响应都不得产生部分修改。
-- EXE 使用 PyInstaller `--onefile`，会存在 bootloader 父进程和服务子进程。生命周期代码在确认可执行文件路径后用 `taskkill /T /F` 终止整棵树；不要退化为只调用父进程的 `Process.Kill()`，否则子进程会遗留端口和日志句柄。
-
-### AI 改动的验证
-
-1. Python 或 Prompt/Schema/Skill 改动后，使用 64 位 Python 3.12 执行：
-
-   ```powershell
-   .\Editor\LightingEditor\AI\Service\build-service.ps1
-   ```
-
-   该脚本在隔离环境运行 Python 测试并重建 EXE；不要手工替换 EXE 或提交 Python 缓存。
-2. C#、协议、设置或生命周期改动后，在 Unity 2022.3 Windows URP 宿主运行 `DawnTOD.Editor.Tests` 与 `DawnTOD.Tests` 的 EditMode 测试。当前已验证基线为 Python `49/49`、Unity `86/86`。
-3. 真实 DeepSeek 验收需要用户授权 API 调用：选择含 `ActivePreset` 的 Controller，设置并保存 Key，启动服务至 `Ready`，发送“设置为正午。”、“把太阳强度改为 1.5。”、“设置为中雨。”和当前管线支持的雾/星空/曝光指令，验证一次 `Ctrl+Z` 同时恢复 Controller 和 Preset。完成后停止服务；如不需保留 Key，先停止服务再在设置窗口 `Clear`。
-
 ## 修改规则
 
 ### 代码与序列化
@@ -168,8 +129,6 @@ DawnTODSystem（时间、控制器发现、时间段和天气混合）
 - 修改 `DawnTODSystem` 的单例、`FindObjectsOfType` 场景扫描、`[ExecuteAlways]`、静态事件或编辑器 repaint 逻辑时，额外测试重复对象、对象销毁、场景切换、编辑模式和播放模式。
 - 修改天气混合时，检查时间段跨午夜的情况，以及无控制器、无预设、多个有效预设和边界时刻。
 - `Runtime/Scripts/DawnTODSystemAdapter.cs` 当前主要是被注释掉的外部适配器草稿，不能当作已经启用或稳定的公共 API。
-- 改动 AI 模块时，保持 `DawnTOD.Editor` 程序集边界；不要把 DPAPI、进程、HTTP 或 Python 服务依赖带入 `Runtime/`。
-- API Key 保存后需要重启本地服务才会生效；不要把密钥读回 UI，也不要增加明文导出、复制或调试入口。
 
 ### Unity 资产与仓库文件
 
@@ -180,7 +139,7 @@ DawnTODSystem（时间、控制器发现、时间段和天气混合）
 
 ## 验证流程
 
-仓库包含 Python 服务测试和 Unity EditMode 测试；验证应按改动范围运行自动化测试、Unity 编译和必要的手工冒烟测试。
+验证应按改动范围运行可用的自动化测试、Unity 编译和必要的手工冒烟测试。
 
 ### 每次改动都做
 
@@ -201,7 +160,6 @@ git diff
 5. 拖动 TOD 时间滑杆，检查日光/月光、天气参数和 Scene View 预览；播放模式下验证自动推进、日出/日落和跨午夜行为。
 6. 涉及降雨时，检查 `DawnGPUParticleSystem`、Compute Shader、雨滴 Shader、雨滴纹理和密度/速度参数。
 7. 涉及 URP/HDRP 时，在对应管线宿主项目分别编译和运行最小场景，并记录实际覆盖的管线。
-8. 涉及 AI 时，确认服务能到达 `Ready`、请求历史不含 API Key、非法/取消请求不应用修改，退出 Unity 后服务进程已结束。
 
 如果没有可用的 Unity 宿主工程，应明确报告：已完成源码/文档和 Git 检查，但未运行 Unity 编译及 URP/HDRP 手动冒烟测试。
 
@@ -210,4 +168,3 @@ git diff
 - 说明修改了哪些文件，以及是否触及序列化数据或渲染管线。
 - 报告运行过的命令和 Unity 验证范围；不要把未执行的测试写成已通过。
 - 保留清晰、最小的 diff；不顺手重构无关代码。
-- 涉及 AI 时，额外说明是否重建 EXE、Python/Unity 测试结果，以及是否因缺少用户 API Key 而未执行真实 DeepSeek 手工验收。
