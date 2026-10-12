@@ -37,7 +37,6 @@ namespace DawnTOD
         private Fog fog;
         private Exposure exposure;
         private IndirectLightingController indirectLighting;
-        private CloudLayer cloudLayer;
 
         // ========== 属性 ==========
 
@@ -94,7 +93,6 @@ namespace DawnTOD
                 fog = null;
                 exposure = null;
                 indirectLighting = null;
-                cloudLayer = null;
                 return;
             }
 
@@ -102,7 +100,6 @@ namespace DawnTOD
             hdrpVolume.profile.TryGet(out fog);
             hdrpVolume.profile.TryGet(out exposure);
             hdrpVolume.profile.TryGet(out indirectLighting);
-            hdrpVolume.profile.TryGet(out cloudLayer);
         }
 
         // ========== 更新方法 ==========
@@ -161,14 +158,15 @@ namespace DawnTOD
                 return;
             }
 
-            // 更新雾距离 (Mean Free Path)
-            fog.meanFreePath.value = preset.fogDistanceCurve.Evaluate(normalizedTime);
+            // Convert UE density only at the HDRP native adapter boundary.
+            fog.meanFreePath.value = 10f / Mathf.Max(preset.fogDensity * 0.480453f, 0.000001f);
+            fog.baseHeight.value = transform.position.y;
+            fog.maximumHeight.value = transform.position.y +
+                10f / Mathf.Max(preset.fogHeightFalloff, 0.0001f);
 
             // 更新雾颜色
-            fog.albedo.value = preset.fogColorGradient.Evaluate(normalizedTime);
+            fog.albedo.value = preset.fogColor;
 
-            // 如果有雾密度曲线，也可以用于控制其他参数
-            // fog.globalLightProbeDimmer.value = 1f - preset.fogDensityCurve.Evaluate(normalizedTime);
         }
 
         /// <summary>
@@ -200,13 +198,13 @@ namespace DawnTOD
         }
 
         /// <summary>
-        /// 设置雾距离
+        /// 设置 UE 雾密度
         /// </summary>
-        public void SetFogDistance(float meanFreePath)
+        public void SetFogDensity(float density)
         {
             if (fog != null)
             {
-                fog.meanFreePath.value = meanFreePath;
+                fog.meanFreePath.value = 10f / Mathf.Max(Mathf.Clamp(density, 0f, 10f) * 0.480453f, 0.000001f);
             }
         }
 
@@ -240,17 +238,6 @@ namespace DawnTOD
             if (indirectLighting != null)
             {
                 indirectLighting.indirectDiffuseLightingMultiplier.value = intensity;
-            }
-        }
-
-        /// <summary>
-        /// 设置云层启用状态
-        /// </summary>
-        public void SetCloudLayerEnabled(bool enabled)
-        {
-            if (cloudLayer != null)
-            {
-                cloudLayer.active = enabled;
             }
         }
 

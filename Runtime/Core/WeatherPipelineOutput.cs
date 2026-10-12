@@ -12,29 +12,68 @@ namespace DawnTOD
     public readonly struct WeatherPipelineOutputState
     {
         public float StarEmission { get; }
-        public float FogDistance { get; }
+        public float FogDensity { get; }
+        public float FogMaxOpacity { get; }
+        public float FogStartDistance { get; }
+        public float FogEndDistance { get; }
+        public float FogCutoffDistance { get; }
         public float FogHeight { get; }
+        public float FogHeightFalloff { get; }
+        public float SecondFogDensity { get; }
+        public float SecondFogHeightFalloff { get; }
+        public float SecondFogHeightOffset { get; }
         public Color FogColor { get; }
+        public Color FogSkyAtmosphereAmbientContributionColorScale { get; }
+        public float FogHeightFogContribution { get; }
+        public Color FogDirectionalInscatteringColor { get; }
+        public float FogDirectionalInscatteringExponent { get; }
+        public float FogDirectionalInscatteringStartDistance { get; }
+        public DawnVolumetricFogSettings VolumetricFog { get; }
         public float ExposureCompensation { get; }
         public bool FogEnabled { get; }
-        public bool FogAffectSky { get; }
 
         public WeatherPipelineOutputState(
             float starEmission,
-            float fogDistance,
-            float fogHeight,
+            float fogDensity,
             Color fogColor,
             float exposureCompensation,
             bool fogEnabled,
-            bool fogAffectSky)
+            float fogHeightFalloff,
+            float fogHeight,
+            float fogMaxOpacity = 1f,
+            float fogStartDistance = 0f,
+            float fogEndDistance = 0f,
+            float fogCutoffDistance = 0f,
+            float secondFogDensity = 0f,
+            float secondFogHeightFalloff = 0.2f,
+            float secondFogHeightOffset = 0f,
+            Color? fogSkyAtmosphereAmbientContributionColorScale = null,
+            float fogHeightFogContribution = 1f,
+            Color? fogDirectionalInscatteringColor = null,
+            float fogDirectionalInscatteringExponent = 4f,
+            float fogDirectionalInscatteringStartDistance = 100f,
+            DawnVolumetricFogSettings? volumetricFog = null)
         {
             StarEmission = starEmission;
-            FogDistance = fogDistance;
+            FogDensity = fogDensity;
+            FogMaxOpacity = fogMaxOpacity;
+            FogStartDistance = fogStartDistance;
+            FogEndDistance = fogEndDistance;
+            FogCutoffDistance = fogCutoffDistance;
             FogHeight = fogHeight;
+            FogHeightFalloff = fogHeightFalloff;
+            SecondFogDensity = secondFogDensity;
+            SecondFogHeightFalloff = secondFogHeightFalloff;
+            SecondFogHeightOffset = secondFogHeightOffset;
             FogColor = fogColor;
+            FogSkyAtmosphereAmbientContributionColorScale = fogSkyAtmosphereAmbientContributionColorScale ?? Color.white;
+            FogHeightFogContribution = fogHeightFogContribution;
+            FogDirectionalInscatteringColor = fogDirectionalInscatteringColor ?? Color.black;
+            FogDirectionalInscatteringExponent = fogDirectionalInscatteringExponent;
+            FogDirectionalInscatteringStartDistance = fogDirectionalInscatteringStartDistance;
+            VolumetricFog = (volumetricFog ?? DawnVolumetricFogSettings.Default).Sanitized();
             ExposureCompensation = exposureCompensation;
             FogEnabled = fogEnabled;
-            FogAffectSky = fogAffectSky;
         }
     }
 

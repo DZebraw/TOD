@@ -38,15 +38,36 @@ namespace DawnTOD
         [Tooltip("星空发射强度曲线 (X: 0-1 归一化时间, Y: 强度)")]
         public AnimationCurve starEmissionCurve = CreateDefaultStarEmissionCurve();
 
-        // ========== 雾效曲线 ==========
-        [Tooltip("雾密度曲线 (X: 0-1 归一化时间, Y: 密度)")]
-        public AnimationCurve fogHeightCurve = CreateDefaultFogHeightCurve();
+        // ========== UE Exponential Height Fog ==========
+        [Tooltip("UE Fog Height Falloff artist value. Density halves every 10 / value meters.")]
+        [Range(0f, 2f)] public float fogHeightFalloff = 0.2f;
 
-        [Tooltip("雾距离曲线 (X: 0-1 归一化时间, Y: Mean Free Path)")]
-        public AnimationCurve fogDistanceCurve = CreateDefaultFogDistanceCurve();
+        [Range(0f, 10f)] public float fogDensity = 0.02f;
+        [Tooltip("Enable UE's second exponential fog layer. Color, opacity and distances are shared by both layers.")]
+        public bool secondFogEnabled;
+        [Range(0f, 10f)] public float secondFogDensity;
+        [Range(0f, 2f)] public float secondFogHeightFalloff = 0.2f;
+        [Tooltip("UE second fog height offset in meters, relative to DawnTODSystem's world height.")]
+        public float secondFogHeightOffset;
+        [Tooltip("Additional fog inscattering luminance, as in UE. Black leaves atmospheric illumination intact.")]
+        [ColorUsage(false, true)] public Color fogColor = Color.black;
+        [Tooltip("Add atmospheric sky ambient and Sun/Moon scattering to the fog.")]
+        public bool fogAtmosphereLighting = true;
+        [ColorUsage(false, true)] public Color fogSkyAtmosphereAmbientContributionColorScale = Color.white;
+        [Tooltip("UE Sky Atmosphere Height Fog Contribution; scales both sky ambient and atmospheric directional scattering.")]
+        [Min(0f)] public float fogHeightFogContribution = 1f;
+        [ColorUsage(false, true)] public Color fogDirectionalInscatteringColor = Color.black;
+        [Range(0.000001f, 1000f)] public float fogDirectionalInscatteringExponent = 4f;
+        [Tooltip("UE default 10000 cm = 100 m. Applied after the main fog start distance.")]
+        [Min(0f)] public float fogDirectionalInscatteringStartDistance = 100f;
+        [Range(0f, 1f)] public float fogMaxOpacity = 1f;
+        [Min(0f)] public float fogStartDistance;
+        [Tooltip("UE End Distance in meters, measured in the horizontal plane. Zero disables the limit.")]
+        [Min(0f)] public float fogEndDistance;
+        [Tooltip("UE Fog Cutoff Distance in meters. Receivers beyond this distance have no fog. Zero disables cutoff.")]
+        [Min(0f)] public float fogCutoffDistance;
 
-        [Tooltip("雾颜色渐变 (X: 0-1 归一化时间)")]
-        public Gradient fogColorGradient = CreateDefaultFogColorGradient();
+        public DawnVolumetricFogSettings volumetricFog = DawnVolumetricFogSettings.Default;
 
         // ========= 曝光 ============
         [Tooltip("自动曝光补偿值")]
@@ -229,51 +250,6 @@ namespace DawnTOD
                 new Keyframe(0.8f, 1000f),  // 19:12 夜间出现
                 new Keyframe(1f, 1000f)     // 24:00
             );
-        }
-
-        private static AnimationCurve CreateDefaultFogHeightCurve()
-        {
-            // 雾密度：清晨和傍晚较浓
-            return new AnimationCurve(
-                new Keyframe(0f, 0.02f),
-                new Keyframe(0.25f, 0.05f), // 清晨雾浓
-                new Keyframe(0.5f, 0.01f),  // 正午雾淡
-                new Keyframe(0.75f, 0.04f), // 傍晚雾浓
-                new Keyframe(1f, 0.02f)
-            );
-        }
-
-        private static AnimationCurve CreateDefaultFogDistanceCurve()
-        {
-            // Mean Free Path：值越大雾越淡
-            return new AnimationCurve(
-                new Keyframe(0f, 500f),
-                new Keyframe(0.25f, 300f),  // 清晨能见度低
-                new Keyframe(0.5f, 1000f),  // 正午能见度高
-                new Keyframe(0.75f, 400f),  // 傍晚能见度低
-                new Keyframe(1f, 500f)
-            );
-        }
-
-        private static Gradient CreateDefaultFogColorGradient()
-        {
-            var gradient = new Gradient();
-            gradient.SetKeys(
-                new GradientColorKey[]
-                {
-                    new GradientColorKey(new Color(0.1f, 0.1f, 0.15f), 0f),    // 午夜深蓝
-                    new GradientColorKey(new Color(0.8f, 0.6f, 0.5f), 0.25f),  // 日出暖色
-                    new GradientColorKey(new Color(0.7f, 0.8f, 0.9f), 0.5f),   // 正午淡蓝
-                    new GradientColorKey(new Color(0.9f, 0.5f, 0.3f), 0.75f),  // 日落橙红
-                    new GradientColorKey(new Color(0.1f, 0.1f, 0.15f), 1f)     // 午夜深蓝
-                },
-                new GradientAlphaKey[]
-                {
-                    new GradientAlphaKey(1f, 0f),
-                    new GradientAlphaKey(1f, 1f)
-                }
-            );
-            return gradient;
         }
 
         private static AnimationCurve CreateDefaultExposureCompensationCurve()

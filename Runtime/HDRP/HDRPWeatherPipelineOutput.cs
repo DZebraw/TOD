@@ -92,8 +92,10 @@ namespace DawnTOD
             if (fog != null)
             {
                 SetOverride(fog.enabled, state.FogEnabled);
-                SetOverride(fog.meanFreePath, state.FogDistance);
+                // Convert UE density at the HDRP native adapter boundary.
+                SetOverride(fog.meanFreePath, 10f / Mathf.Max(state.FogDensity * 0.480453f, 0.000001f));
                 SetOverride(fog.baseHeight, state.FogHeight);
+                SetOverride(fog.maximumHeight, state.FogHeight + 10f / Mathf.Max(state.FogHeightFalloff, 0.0001f));
                 SetOverride(
                     fog.enableVolumetricFog,
                     state.FogEnabled);

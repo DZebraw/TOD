@@ -29,6 +29,7 @@ RWTexture2D<float3> _RWinScatteringLUT;
 // Ambient
 RWTexture2D<float3> _RWambientLUT;
 float3 _AtmosphereGroundColor;
+float3 _DawnGroundDiffuseAlbedo;
 float3 _AmbientSunDirection;
 
 //TODO Sample State
@@ -38,7 +39,7 @@ SamplerState _pointClampSampler;
 // Helper Function
 float3 Transmittance(float cosAngle01, float height01)
 {
-    float2 particleDensityCP = _IntegralCPDensityLUT.SampleLevel(_trilinearClampSampler, float2(cosAngle01, height01), 0.0).xy;
+    float2 particleDensityCP = AtmosphereLightOpticalDepth(height01 * _AtmosphereHeight, cosAngle01 * 2 - 1);
     float3 TrCP = particleDensityCP.x * _ExtinctionR;
     float3 TmCP = particleDensityCP.y * _ExtinctionM;
     return exp(-TrCP - TmCP);
@@ -53,14 +54,14 @@ float2 ComputeDensity(float3 rayStart, float3 rayDir)
     
     float stepCount = SAMPLECOUNT_DENSITY;
     
-    float2 intersection = RaySphereIntersection(rayStart, rayDir, planetCenter, _PlanetRadius);
-    if (intersection.x > 0)
-    {
-        // intersection with planet, write high density
-        return 1 * pow(10, 20);
-    }
+    // Like UE SkyAtmosphereCommon: keep planet shadow OUT of the filtered LUT.
+    // Interpolating a 1e20 sentinel with a sunlit texel erased high-cloud twilight.
+    float altitude = max(0, rayStart.y);
+    float horizon = -sqrt(altitude * (2 * _PlanetRadius + altitude)) / (_PlanetRadius + altitude);
+    float mu = max(rayDir.y, horizon + 1e-5);
+    rayDir = float3(sqrt(saturate(1-mu*mu)), mu, 0);
     
-    intersection = RaySphereIntersection(rayStart, rayDir, planetCenter, _PlanetRadius + _AtmosphereHeight);
+    float2 intersection = RaySphereIntersection(rayStart, rayDir, planetCenter, _PlanetRadius + _AtmosphereHeight);
     float3 rayEnd = rayStart + rayDir * intersection.y;
     
     // compute density along the ray
@@ -173,18 +174,22 @@ float3 ComputeAmbientRadiance(float3 rayDir, float3 lightDir)
     if (hitsGround)
         rayLength = groundDistance;
 
-    float3 background = hitsGround ? _AtmosphereGroundColor : 0.0;
+    float3 groundDiffuse = max(0,_DawnSkyAmbient) * PI;
+    [unroll] for (int lightIndex=0; lightIndex<2; lightIndex++)
+        groundDiffuse += DawnGroundAtmosphereLightRadiance(_DawnAtmosphereLightDirections[lightIndex].xyz,
+            _DawnAtmosphereLightColors[lightIndex].rgb) * saturate(_DawnAtmosphereLightDirections[lightIndex].y) / PI;
+    // A diffuse lower hemisphere represents ground bounce, not self-emission.
+    // The previous sky probe supplies its diffuse incident sky term.
+    float3 background = hitsGround ? _AtmosphereGroundColor + _DawnGroundDiffuseAlbedo * groundDiffuse : 0.0;
     if (rayLength <= 0.0)
         return SanitizeAmbientRadiance(background);
 
     float3 extinction;
-    float3 inscattering = IntegrateInscattering(
+    float3 inscattering = IntegrateAtmosphereLights(
         rayStart,
         rayDir,
         rayLength,
         planetCenter,
-        1,
-        lightDir,
         SAMPLECOUNT_AMBIENT_RAYMARCH,
         extinction);
     return SanitizeAmbientRadiance(background * extinction + inscattering);

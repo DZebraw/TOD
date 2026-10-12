@@ -10,9 +10,6 @@ namespace DawnTOD
     internal sealed class URPWeatherPipelineOutput : IWeatherPipelineOutput
     {
         private const float RuntimeFogVolumePriority = 10000f;
-        private const float MinimumFogDistance = 0.01f;
-        private const float DefaultFogHeightRange = 100f;
-        private const float DefaultMaximumFogDistance = 5000f;
 
         private readonly DawnTODSystem owner;
 
@@ -127,20 +124,31 @@ namespace DawnTOD
                 return;
             }
 
-            float baseHeight = state.FogHeight;
             SetOverride(runtimeFogSettings.enabled, state.FogEnabled);
+            SetOverride(runtimeFogSettings.volumetricFog, state.VolumetricFog.Sanitized());
             SetOverride(
-                runtimeFogSettings.meanFreePath,
-                Mathf.Max(MinimumFogDistance, state.FogDistance));
-            SetOverride(runtimeFogSettings.baseHeight, baseHeight);
-            SetOverride(runtimeFogSettings.albedo, state.FogColor);
+                runtimeFogSettings.density,
+                Mathf.Clamp(state.FogDensity, 0f, 10f));
+            SetOverride(runtimeFogSettings.height, state.FogHeight);
+            SetOverride(runtimeFogSettings.secondFogEnabled, state.SecondFogDensity > 0f);
+            SetOverride(runtimeFogSettings.secondFogDensity, Mathf.Clamp(state.SecondFogDensity, 0f, 10f));
+            SetOverride(runtimeFogSettings.secondFogHeightFalloff, Mathf.Clamp(state.SecondFogHeightFalloff, 0f, 2f));
+            SetOverride(runtimeFogSettings.secondFogHeightOffset, state.SecondFogHeightOffset);
+            SetOverride(runtimeFogSettings.inscatteringColor, state.FogColor);
+            SetOverride(runtimeFogSettings.atmosphereLighting,
+                state.FogHeightFogContribution > 0f);
+            SetOverride(runtimeFogSettings.skyAtmosphereAmbientContributionColorScale, state.FogSkyAtmosphereAmbientContributionColorScale);
+            SetOverride(runtimeFogSettings.heightFogContribution, Mathf.Max(0f, state.FogHeightFogContribution));
+            SetOverride(runtimeFogSettings.directionalInscatteringColor, state.FogDirectionalInscatteringColor);
+            SetOverride(runtimeFogSettings.directionalInscatteringExponent, Mathf.Clamp(state.FogDirectionalInscatteringExponent, 0.000001f, 1000f));
+            SetOverride(runtimeFogSettings.directionalInscatteringStartDistance, Mathf.Max(0f, state.FogDirectionalInscatteringStartDistance));
             SetOverride(
-                runtimeFogSettings.maximumHeight,
-                baseHeight + DefaultFogHeightRange);
-            SetOverride(
-                runtimeFogSettings.maximumFogDistance,
-                DefaultMaximumFogDistance);
-            SetOverride(runtimeFogSettings.affectSky, state.FogAffectSky);
+                runtimeFogSettings.heightFalloff,
+                Mathf.Clamp(state.FogHeightFalloff, 0f, 2f));
+            SetOverride(runtimeFogSettings.maxOpacity, Mathf.Clamp01(state.FogMaxOpacity));
+            SetOverride(runtimeFogSettings.startDistance, Mathf.Max(0f, state.FogStartDistance));
+            SetOverride(runtimeFogSettings.endDistance, Mathf.Max(0f, state.FogEndDistance));
+            SetOverride(runtimeFogSettings.cutoffDistance, Mathf.Max(0f, state.FogCutoffDistance));
         }
 
         public void Release()

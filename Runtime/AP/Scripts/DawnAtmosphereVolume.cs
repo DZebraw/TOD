@@ -50,6 +50,9 @@ namespace DawnTOD
         public ColorParameter groundColor =
             new ColorParameter(Color.black, true, false, true);
 
+        [Tooltip("Diffuse ground reflectance used in the ambient probe's lower hemisphere. Lit by current Sun/Moon and sky; black preserves the legacy no-ground-bounce probe.")]
+        public ColorParameter groundDiffuseAlbedo = new ColorParameter(Color.black, false, false, true);
+
         [Header("Space")]
         [Tooltip("HDR cubemap rendered behind the atmosphere.")]
         public CubemapParameter spaceEmissionTexture = new CubemapParameter(null);

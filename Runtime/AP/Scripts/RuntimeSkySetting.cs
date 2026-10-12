@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 #if DAWNTOD_URP_AVAILABLE
 using System.Linq;
 using Unity.Collections;
@@ -44,6 +44,10 @@ namespace DawnTOD
 
         [Header("Environments")]
         private Light mainLight;
+        private readonly Vector4[] atmosphereLightDirections = new Vector4[2];
+        private readonly Vector4[] atmosphereLightColors = new Vector4[2];
+        private static readonly Vector3[] FogAmbientDirections = { Vector3.up };
+        private static readonly Color[] FogAmbientColors = new Color[1];
 
         [HideInInspector]
         [ColorUsage(false, true)]
@@ -179,7 +183,7 @@ namespace DawnTOD
         {
 
             FindAndSetDirectionalLight();
-            
+            PublishAtmosphereLights();
             Shader.SetGlobalTexture(ScatteringKeys.kIntergalCPDensityLUT, m_IntegrateCPDensityLUT);
             //Shader.SetGlobalTexture(Keys.kSunOnSurface, m_SunOnSurfaceLUT);
             float effectiveRayleighDensity = Resolve(volume, volume?.rayleighDensityScale, rDensityScale);
@@ -193,6 +197,9 @@ namespace DawnTOD
             Shader.SetGlobalColor(
                 ScatteringKeys.kAtmosphereGroundColor,
                 Resolve(volume, volume?.groundColor, atmosphereGroundColor));
+            Color groundAlbedo = Resolve(volume, volume?.groundDiffuseAlbedo, Color.black);
+            Shader.SetGlobalVector("_DawnGroundDiffuseAlbedo",new Vector4(
+                Mathf.Clamp01(groundAlbedo.r),Mathf.Clamp01(groundAlbedo.g),Mathf.Clamp01(groundAlbedo.b),0));
             ApplySpaceParams(volume);
             Shader.SetGlobalVector(ScatteringKeys.kIncomingLight, lightFromOuterSpace);
             Shader.SetGlobalFloat(
@@ -410,6 +417,10 @@ namespace DawnTOD
             computerShader.SetTexture(index, ScatteringKeys.kRWintergalCPDensityLUT, m_IntegrateCPDensityLUT);
 
             ScatteringUtils.Dispatch(computerShader, index, IntegrateCpDensityLutSize);
+            // The texture is first allocated above. Publish it in the same update
+            // so the first rendered frame can sample the computed density.
+            Shader.SetGlobalTexture(ScatteringKeys.kIntergalCPDensityLUT, m_IntegrateCPDensityLUT);
+            Shader.SetGlobalFloat("_DawnAtmosphereAvailable", 1f);
         }
 
         //TODO need HDR format?
@@ -651,6 +662,10 @@ namespace DawnTOD
         {
             RenderSettings.ambientMode = AmbientMode.Custom;
             RenderSettings.ambientProbe = probe;
+            // Explicit globals are needed by fullscreen cloud/fog passes: UnityPerDraw
+            // SH values may otherwise belong to the last opaque renderer.
+            probe.Evaluate(FogAmbientDirections, FogAmbientColors);
+            Shader.SetGlobalColor("_DawnSkyAmbient", SanitizeAmbientColor(FogAmbientColors[0]) / Mathf.PI);
         }
 
         private static Color SanitizeAmbientColor(Color color)
@@ -775,6 +790,28 @@ namespace DawnTOD
             }
         }
 
+        private void PublishAtmosphereLights()
+        {
+            var tod = DawnTODSystem.Instance;
+            for (int i=0;i<2;i++)
+            {
+                Light light = tod ? (i==0 ? tod.sunLight : tod.moonLight) : (i==0 ? mainLight : null);
+                if (i==1 && tod && light==tod.sunLight) light=null;
+                atmosphereLightDirections[i] = light ? (Vector4)(-light.transform.forward) : new Vector4(0,1,0,0);
+                Color color = Color.black;
+                bool activeLight = light && light.isActiveAndEnabled && light.type==LightType.Directional;
+                if (activeLight)
+                {
+                    color = (QualitySettings.activeColorSpace==ColorSpace.Linear ? light.color.linear : light.color)*Mathf.Max(0,light.intensity);
+                    if (light.useColorTemperature && GraphicsSettings.lightsUseColorTemperature)
+                        color *= Mathf.CorrelatedColorTemperatureToRGB(light.colorTemperature);
+                }
+                atmosphereLightColors[i] = new Vector4(color.r,color.g,color.b,activeLight ? 1f : 0f);
+            }
+            Shader.SetGlobalVectorArray("_DawnAtmosphereLightDirections",atmosphereLightDirections);
+            Shader.SetGlobalVectorArray("_DawnAtmosphereLightColors",atmosphereLightColors);
+        }
+
         private void FindAndSetDirectionalLight()
         {
             if (DawnTODSystem.Instance != null)
@@ -801,7 +838,10 @@ namespace DawnTOD
             }
 
             m_MissingMainLightWarningLogged = false;
-            lightFromOuterSpace = mainLight.color * mainLight.intensity;
+            lightFromOuterSpace = (QualitySettings.activeColorSpace == ColorSpace.Linear
+                ? mainLight.color.linear : mainLight.color) * mainLight.intensity;
+            if (mainLight.useColorTemperature && GraphicsSettings.lightsUseColorTemperature)
+                lightFromOuterSpace *= Mathf.CorrelatedColorTemperatureToRGB(mainLight.colorTemperature);
         }
 
         private void LogMissingMainLight(string message)
@@ -847,6 +887,7 @@ namespace DawnTOD
             UpdateParams(atmosphereVolume);
             SetCommonParams(atmosphereVolume);
             PreComputeAll(atmosphereVolume);
+            Shader.SetGlobalFloat("_DawnAtmosphereAvailable", m_IntegrateCPDensityLUT != null ? 1f : 0f);
             //UpdateMainLight();
             UpdateAmbient(atmosphereVolume);
         }
@@ -871,6 +912,8 @@ namespace DawnTOD
             }
 
             m_PipelineOutputSuspended = true;
+            Shader.SetGlobalFloat("_DawnAtmosphereAvailable", 0f);
+            Shader.SetGlobalColor("_DawnSkyAmbient", Color.black);
             Shader.SetGlobalFloat(
                 ScatteringKeys.kSpaceEmissionMultiplier,
                 0f);

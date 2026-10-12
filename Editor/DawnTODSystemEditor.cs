@@ -668,6 +668,10 @@ namespace DawnTODEditor
 
             EditorGUILayout.PropertyField(sunLightProp, new GUIContent("Sun Light"));
             EditorGUILayout.PropertyField(moonLightProp, new GUIContent("Moon Light"));
+            EditorGUILayout.PropertyField(serializedObject.FindProperty("driveDirectionalLights"),
+                new GUIContent("Drive Directional Lights"));
+            EditorGUILayout.PropertyField(serializedObject.FindProperty("directionalLightOverlapHours"),
+                new GUIContent("Twilight Overlap (Hours)"));
             EditorGUILayout.PropertyField(
                 rainParticleSystemProp,
                 new GUIContent("Rain Output"));

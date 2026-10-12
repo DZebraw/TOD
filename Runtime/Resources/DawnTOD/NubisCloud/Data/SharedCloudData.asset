@@ -1,0 +1,27 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 61a6eac0ab7f4a5c90dfa02a2ba89e07, type: 3}
+  m_Name: SharedCloudData
+  m_EditorClassIdentifier: 
+  weather: {fileID: 2800000, guid: 5f10f35e39004f209c2b1361fd619c1a, type: 2}
+  bottomType: {fileID: 2800000, guid: 5371dafe92fc453bb3b96590341912ca, type: 2}
+  topProfile: {fileID: 2800000, guid: 0b2b8fa27a7d41cdab41c1d52001f00b, type: 2}
+  bottomProfile: {fileID: 2800000, guid: 12d2745e27d54cb3b595e2b83584a5be, type: 2}
+  shapeNoise: {fileID: 11700000, guid: 815aad4971ab490c9872de1bb5526357, type: 2}
+  fieldSize: 16000
+  generationVersion: 4
+  authoredNdf: {fileID: 11400000, guid: 3bf1f566d56b4639b3692f0eb1bf1582, type: 2}
+  superstormNdf: {fileID: 11400000, guid: d3c2e9cb4e8a457d9d7c525eeb6d7ce4, type: 2}
+  cirrus: {fileID: 11400000, guid: c75d829cf6974ceb82029102f29cf83a, type: 2}
+  weatherSeed: 193
+  weatherFrequency: 5
+  weatherCoverageBias: 0

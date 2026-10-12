@@ -5,40 +5,43 @@ using UnityEngine.Rendering;
 
 namespace DawnTOD
 {
-    [HideInInspector]
-    [Serializable]
+    [HideInInspector, Serializable]
     public sealed class DawnFogVolume : VolumeComponent
     {
-        [Header("Fog")]
-        [Tooltip("Enables the Dawn TOD screen-space fog effect.")]
-        public BoolParameter enabled = new BoolParameter(false);
-
-        [Tooltip("Average distance, in meters, that light travels through the fog before scattering. Lower values produce denser fog.")]
-        public MinFloatParameter meanFreePath = new MinFloatParameter(1000f, 0.01f);
-
-        [Tooltip("World-space height, in meters, below which the fog reaches its full density.")]
-        public FloatParameter baseHeight = new FloatParameter(0f);
-
-        [Tooltip("Fog scattering color, equivalent to HDRP Fog Albedo.")]
-        public ColorParameter albedo =
-            new ColorParameter(Color.white, true, false, true);
-
-        [Header("Advanced")]
-        [Tooltip("World-space height, in meters, at which the fog density reaches zero.")]
-        public FloatParameter maximumHeight = new FloatParameter(100f);
-
-        [Tooltip("Maximum camera distance, in meters, evaluated by the post-process fog.")]
-        public MinFloatParameter maximumFogDistance =
-            new MinFloatParameter(5000f, 0.01f);
-
-        [Tooltip("Applies fog to pixels that contain only the sky background.")]
-        public BoolParameter affectSky = new BoolParameter(true);
-
-        public bool IsActive()
+        [Serializable]
+        public sealed class VolumetricSettingsParameter : VolumeParameter<DawnVolumetricFogSettings>
         {
-            return active && enabled.value && meanFreePath.value > 0f &&
-                   maximumFogDistance.value > 0f;
+            public VolumetricSettingsParameter(DawnVolumetricFogSettings value) : base(value, false) { }
         }
+
+        public VolumetricSettingsParameter volumetricFog = new VolumetricSettingsParameter(DawnVolumetricFogSettings.Default);
+        public BoolParameter enabled = new BoolParameter(false);
+        [Tooltip("UE Fog Density artist value. Internally divided by 1000 per centimeter.")]
+        public ClampedFloatParameter density = new ClampedFloatParameter(0.02f, 0f, 10f);
+        [Tooltip("UE Fog Height Falloff artist value. Density halves every 10 / value meters.")]
+        public ClampedFloatParameter heightFalloff = new ClampedFloatParameter(0.2f, 0f, 2f);
+        [Tooltip("Fog actor world height in meters; supplied by DawnTODSystem.transform.position.y.")]
+        public FloatParameter height = new FloatParameter(0f);
+        public BoolParameter secondFogEnabled = new BoolParameter(false);
+        public ClampedFloatParameter secondFogDensity = new ClampedFloatParameter(0f, 0f, 10f);
+        public ClampedFloatParameter secondFogHeightFalloff = new ClampedFloatParameter(0.2f, 0f, 2f);
+        [Tooltip("Second fog layer height offset in meters, relative to the primary fog height.")]
+        public FloatParameter secondFogHeightOffset = new FloatParameter(0f);
+        public ColorParameter inscatteringColor = new ColorParameter(Color.black, true, false, true);
+        [Tooltip("Add sky ambient and atmospheric Sun/Moon scattering independently of Fog Inscattering Color, like UE.")]
+        public BoolParameter atmosphereLighting = new BoolParameter(true);
+        public ColorParameter skyAtmosphereAmbientContributionColorScale = new ColorParameter(Color.white, true, false, true);
+        public MinFloatParameter heightFogContribution = new MinFloatParameter(1f, 0f);
+        public ColorParameter directionalInscatteringColor = new ColorParameter(Color.black, true, false, true);
+        public ClampedFloatParameter directionalInscatteringExponent = new ClampedFloatParameter(4f, 0.000001f, 1000f);
+        public MinFloatParameter directionalInscatteringStartDistance = new MinFloatParameter(100f, 0f);
+        public ClampedFloatParameter maxOpacity = new ClampedFloatParameter(1f, 0f, 1f);
+        public MinFloatParameter startDistance = new MinFloatParameter(0f, 0f);
+        public MinFloatParameter endDistance = new MinFloatParameter(0f, 0f);
+        public MinFloatParameter cutoffDistance = new MinFloatParameter(0f, 0f);
+
+        public bool IsActive() => active && enabled.value &&
+            (density.value > 0f || (secondFogEnabled.value && secondFogDensity.value > 0f));
     }
 }
 #endif

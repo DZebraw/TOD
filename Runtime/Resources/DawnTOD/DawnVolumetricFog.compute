@@ -1,0 +1,186 @@
+#pragma kernel LightScatteringCS
+#pragma kernel FinalIntegrationCS
+#pragma multi_compile _ _MAIN_LIGHT_SHADOWS _MAIN_LIGHT_SHADOWS_CASCADE _MAIN_LIGHT_SHADOWS_SCREEN
+#pragma multi_compile _ _ADDITIONAL_LIGHT_SHADOWS
+#pragma multi_compile _ _SHADOWS_SOFT
+
+// Always sample the world-space shadow atlas; screen-space shadows describe surfaces, not froxels.
+#define _SURFACE_TYPE_TRANSPARENT 1
+#if defined(_MAIN_LIGHT_SHADOWS_SCREEN)
+    #define _MAIN_LIGHT_SHADOWS_CASCADE 1
+#endif
+#include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
+#include "Packages/com.unity.render-pipelines.core/ShaderLibrary/CommonMaterial.hlsl"
+#include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Shadows.hlsl"
+#include "../../URP/DawnExponentialHeightFog.hlsl"
+
+struct DawnFogLight
+{
+    float4 positionType; // TO-light direction / world position; w: 0 directional, 1 point, 2 spot
+    float4 colorShadow; // linear radiance; w: -2 main shadow, -1 unshadowed, >=0 additional shadow index
+    float4 directionRange; // spot TO-source axis, w: inverse range squared
+    float4 parameters; // spot scale, spot offset, volumetric scattering intensity, raw directional luminance
+};
+StructuredBuffer<DawnFogLight> _DawnFogLights;
+int _DawnFogLightCount;
+float4 _DawnFogAlbedo;
+float4 _DawnFogEmissive;
+float4 _DawnFogMedium; // extinction scale, g, static lighting intensity, override fog colors
+float4 _DawnFogSkySH[3]; // first two SH bands, as irradiance / pi
+StructuredBuffer<float4> _DawnFogStaticSH; // RGB float4s per vertex in an 8^3 frustum grid
+int _DawnFogStaticProbeSize;
+float4 _DawnFogJitter[4];
+float _DawnFogHistoryWeight;
+float4x4 _DawnFogPrevWorldToClip;
+float4 _DawnFogPrevOrigin;
+float4 _DawnFogPrevForward;
+float4 _DawnFogPrevGridZ;
+TEXTURE3D(_DawnFogHistory);
+SAMPLER(sampler_DawnFogHistory);
+RWTexture3D<float4> _DawnFogScatteringWrite;
+Texture3D<float4> _DawnFogScattering;
+RWTexture3D<float4> _DawnFogIntegratedWrite;
+
+float3 DawnFogStaticLighting(float3 gridUV, float3 direction)
+{
+    if (_DawnFogStaticProbeSize <= 0 || _DawnFogMedium.z <= 0) return 0;
+    float3 coordinate = clamp(gridUV * _DawnFogStaticProbeSize - 0.5, 0, _DawnFogStaticProbeSize - 1);
+    uint3 lo = (uint3)floor(coordinate);
+    uint3 hi = min(lo + 1, (uint)_DawnFogStaticProbeSize - 1);
+    float3 fraction = frac(coordinate);
+    float3 result = 0;
+    [unroll] for (uint corner = 0; corner < 8; corner++)
+    {
+        uint3 selectHigh = uint3(corner & 1, (corner >> 1) & 1, (corner >> 2) & 1);
+        uint3 p = uint3(selectHigh.x ? hi.x : lo.x, selectHigh.y ? hi.y : lo.y, selectHigh.z ? hi.z : lo.z);
+        float3 weight = lerp(1 - fraction, fraction, selectHigh);
+        uint index = (p.x + _DawnFogStaticProbeSize * (p.y + _DawnFogStaticProbeSize * p.z)) * 3;
+        float4 normal = float4(direction, 1);
+        result += max(0, float3(dot(_DawnFogStaticSH[index], normal), dot(_DawnFogStaticSH[index + 1], normal),
+            dot(_DawnFogStaticSH[index + 2], normal))) * (weight.x * weight.y * weight.z);
+    }
+    return result * _DawnFogMedium.z;
+}
+
+float DawnFogLightShadow(DawnFogLight light, float3 world, float3 toLight)
+{
+    float shadow = 1.0;
+    if (light.colorShadow.w < -1.5)
+    {
+        float4 shadowCoord = TransformWorldToShadowCoord(world);
+        // URP's orthographic main-light lookup ignores w. Keep it nonzero so FXC
+        // cannot fold a division by zero while inlining the shared shadow sampler.
+        shadowCoord.w = 1.0;
+        shadow = lerp(MainLightRealtimeShadow(shadowCoord), 1, GetMainLightShadowFade(world));
+    }
+    else if (light.colorShadow.w >= 0)
+        shadow = lerp(AdditionalLightRealtimeShadow((int)light.colorShadow.w, world, toLight), 1, GetAdditionalLightShadowFade(world));
+    return shadow;
+}
+
+float3 DawnFogLighting(float3 world, float3 cameraRay, float cellRadius)
+{
+    float4 ambientDirection = float4(-cameraRay * _DawnFogMedium.y, 1);
+    float3 sky = max(0, float3(dot(_DawnFogSkySH[0], ambientDirection), dot(_DawnFogSkySH[1], ambientDirection),
+        dot(_DawnFogSkySH[2], ambientDirection)));
+    if (_DawnFogMedium.w > 0.5)
+        // UE SHAmbientFunction() projects the replacement height-fog color into L0.
+        sky = (_DawnFogInscattering.rgb + _DawnFogSkyAmbientScale.rgb * max(0, _DawnSkyAmbient)
+            * (_DawnAtmosphereAvailable > 0.5 ? _DawnFogAtmosphere.x : 0)) / (2.0 * sqrt(PI));
+    float3 volumeUV = float3(DawnFogProjectedUV(mul(_DawnFogWorldToClip, float4(world, 1))),
+        DawnFogDepthSlice(dot(world - _DawnFogCameraOrigin.xyz, _DawnFogCameraForward.xyz)) * _DawnFogGridSize.w);
+    float3 lighting = sky + DawnFogStaticLighting(volumeUV, cameraRay * _DawnFogMedium.y);
+    [loop] for (int i = 0; i < _DawnFogLightCount; i++)
+    {
+        DawnFogLight light = _DawnFogLights[i];
+        float3 toLight = light.positionType.xyz;
+        float attenuation = 1;
+        if (light.positionType.w > 0.5)
+        {
+            toLight -= world;
+            float distanceSq = dot(toLight, toLight);
+            float rangeTerm = saturate(1 - pow(distanceSq * light.directionRange.w, 2));
+            float bias = max(cellRadius, 0.01); // UE's one-centimeter minimum distance bias.
+            attenuation = rangeTerm * rangeTerm / max(1.0e-4, distanceSq + bias * bias);
+            toLight *= rsqrt(max(distanceSq, 1.0e-8));
+            if (light.positionType.w > 1.5)
+            {
+                float spot = saturate(dot(toLight, light.directionRange.xyz) * light.parameters.x + light.parameters.y);
+                attenuation *= spot * spot;
+            }
+        }
+        if (attenuation <= 0 || light.parameters.z <= 0) continue;
+        float3 color = light.colorShadow.rgb;
+        if (light.positionType.w < 0.5 && _DawnFogMedium.w > 0.5)
+            // FogRendering.cpp has already scaled View.DirectionalInscatteringColor by the raw sun
+            // luminance; VolumetricFog.usf then scales it by the incoming light luminance again.
+            color = _DawnFogDirectionalColor.rgb * light.parameters.w
+                * dot(color, float3(0.212639, 0.715169, 0.072192));
+        lighting += color * (attenuation * light.parameters.z * DawnFogLightShadow(light, world, toLight)
+            * DawnVolumetricFogPhase(_DawnFogMedium.y, dot(toLight, cameraRay)));
+    }
+    return lighting;
+}
+
+[numthreads(4, 4, 4)]
+void LightScatteringCS(uint3 cell : SV_DispatchThreadID)
+{
+    if (any(cell >= (uint3)_DawnFogGridSize.xyz)) return;
+    float3 center = DawnFogCellWorld(cell, 0.5);
+    // UE MaterialSetupCS: both exponential layers, then MatchHeightFogFactor = 0.5.
+    // Density and extinction here are per meter, rather than UE's per centimeter.
+    float density = min(65504.0, 0.5 * (DawnVolumetricLayerDensity(_DawnExponentialFogParameters.xyz, center.y)
+        + DawnVolumetricLayerDensity(_DawnExponentialFogParameters2.xyz, center.y)));
+    float extinction = min(65504.0, max(0, density * _DawnFogMedium.x));
+    float3 scatter = _DawnFogAlbedo.rgb * extinction;
+    float4 previousClip = mul(_DawnFogPrevWorldToClip, float4(center, 1));
+    float previousDepth = dot(center - _DawnFogPrevOrigin.xyz, _DawnFogPrevForward.xyz);
+    float previousZ = log2(max(1.0e-6, previousDepth * _DawnFogPrevGridZ.x + _DawnFogPrevGridZ.y))
+        * _DawnFogPrevGridZ.z * _DawnFogGridSize.w;
+    float3 historyUV = float3(DawnFogProjectedUV(previousClip) * _DawnFogGridUVScale.xy, previousZ);
+    bool validHistory = previousClip.w > 0 && previousDepth > 0 && all(historyUV > 0)
+        && all(historyUV < float3(_DawnFogGridUVScale.xy, 1));
+    float historyWeight = validHistory ? _DawnFogHistoryWeight : 0;
+    // UE defaults to four lighting samples on a history miss.
+    int samples = historyWeight < 0.001 ? 4 : 1;
+    float3 lighting = 0;
+    [loop] for (int i = 0; i < samples; i++)
+    {
+        float3 world = DawnFogCellWorld(cell, _DawnFogJitter[i].xyz);
+        float cellRadius = length(DawnFogCellWorld(cell + 1, _DawnFogJitter[i].xyz) - world);
+        float3 ray = _DawnFogVolumetricRange.w > 0.5 ? _DawnFogCameraForward.xyz
+            : normalize(world - _DawnFogCameraOrigin.xyz);
+        lighting += DawnFogLighting(world, ray, cellRadius);
+    }
+    float4 current = float4(lighting * scatter / samples + _DawnFogEmissive.rgb * density, extinction);
+    if (historyWeight > 0)
+        current = lerp(current, SAMPLE_TEXTURE3D_LOD(_DawnFogHistory, sampler_DawnFogHistory,
+            clamp(historyUV, 0.5 / _DawnFogGridSize.xyz, float3(_DawnFogGridUVScale.zw, 1)), 0), historyWeight);
+    _DawnFogScatteringWrite[cell] = all(isfinite(current)) ? clamp(current, 0, 65504) : 0;
+}
+
+[numthreads(8, 8, 1)]
+void FinalIntegrationCS(uint3 cell : SV_DispatchThreadID)
+{
+    if (any(cell.xy >= (uint2)_DawnFogGridSize.xy)) return;
+    float3 accumulatedLight = 0;
+    float accumulatedTransmittance = 1;
+    float accumulatedDepth = 0;
+    float3 previousWorld = DawnFogCellWorld(uint3(cell.xy, 0), float3(0.5, 0.5, 0));
+    [loop] for (uint z = 0; z < (uint)_DawnFogGridSize.z; z++)
+    {
+        uint3 p = uint3(cell.xy, z);
+        float4 coefficient = _DawnFogScattering[p];
+        float3 world = DawnFogCellWorld(p, 0.5);
+        float stepLength = length(world - previousWorld);
+        previousWorld = world;
+        float transmittance = exp(-coefficient.a * stepLength);
+        accumulatedDepth += stepLength;
+        float fade = saturate(accumulatedDepth * _DawnFogVolumetricRange.z);
+        // UE FinalIntegrationCS uses a 1e-5 /cm extinction floor = 1e-3 /m.
+        float3 integrated = fade * (coefficient.rgb - coefficient.rgb * transmittance) / max(coefficient.a, 0.001);
+        accumulatedLight += integrated * accumulatedTransmittance;
+        accumulatedTransmittance *= lerp(1.0, transmittance, fade);
+        _DawnFogIntegratedWrite[p] = float4(min(accumulatedLight, 65504), accumulatedTransmittance);
+    }
+}

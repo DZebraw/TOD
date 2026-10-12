@@ -16,7 +16,6 @@ namespace DawnTODEditor
         private SerializedProperty activePresetProp;
         private SerializedProperty timeOfDayProp;
         private SerializedProperty fogEnabledProp;
-        private SerializedProperty fogAffectSkyProp;
 
         private SerializedObject presetSerializedObject;
         private SerializedProperty sunAzimuthCurveProp;
@@ -28,9 +27,24 @@ namespace DawnTODEditor
         private SerializedProperty moonIntensityCurveProp;
         private SerializedProperty moonColorGradientProp;
         private SerializedProperty starEmissionCurveProp;
-        private SerializedProperty fogHeightCurveProp;
-        private SerializedProperty fogDistanceCurveProp;
-        private SerializedProperty fogColorGradientProp;
+        private SerializedProperty volumetricFogProp;
+        private SerializedProperty fogDensityProp;
+        private SerializedProperty fogMaxOpacityProp;
+        private SerializedProperty fogStartDistanceProp;
+        private SerializedProperty fogEndDistanceProp;
+        private SerializedProperty fogCutoffDistanceProp;
+        private SerializedProperty fogColorProp;
+        private SerializedProperty fogAtmosphereLightingProp;
+        private SerializedProperty fogSkyAtmosphereAmbientContributionColorScaleProp;
+        private SerializedProperty fogHeightFogContributionProp;
+        private SerializedProperty fogDirectionalInscatteringExponentProp;
+        private SerializedProperty fogDirectionalInscatteringColorProp;
+        private SerializedProperty fogDirectionalInscatteringStartDistanceProp;
+        private SerializedProperty fogHeightFalloffProp;
+        private SerializedProperty secondFogEnabledProp;
+        private SerializedProperty secondFogDensityProp;
+        private SerializedProperty secondFogHeightFalloffProp;
+        private SerializedProperty secondFogHeightOffsetProp;
         private SerializedProperty exposureCompensationCurveProp;
         private SerializedProperty rainySpeedCurveProp;
         private SerializedProperty precipitationAmountCurveProp;
@@ -51,7 +65,6 @@ namespace DawnTODEditor
             activePresetProp = serializedObject.FindProperty("activePreset");
             timeOfDayProp = serializedObject.FindProperty("timeOfDay");
             fogEnabledProp = serializedObject.FindProperty("fogEnabled");
-            fogAffectSkyProp = serializedObject.FindProperty("fogAffectSky");
 
             UpdatePresetSerializedProperties();
         }
@@ -81,9 +94,24 @@ namespace DawnTODEditor
             moonIntensityCurveProp = presetSerializedObject.FindProperty("moonIntensityCurve");
             moonColorGradientProp = presetSerializedObject.FindProperty("moonColorGradient");
             starEmissionCurveProp = presetSerializedObject.FindProperty("starEmissionCurve");
-            fogHeightCurveProp = presetSerializedObject.FindProperty("fogHeightCurve");
-            fogDistanceCurveProp = presetSerializedObject.FindProperty("fogDistanceCurve");
-            fogColorGradientProp = presetSerializedObject.FindProperty("fogColorGradient");
+            volumetricFogProp = presetSerializedObject.FindProperty("volumetricFog");
+            fogDensityProp = presetSerializedObject.FindProperty("fogDensity");
+            fogMaxOpacityProp = presetSerializedObject.FindProperty("fogMaxOpacity");
+            fogStartDistanceProp = presetSerializedObject.FindProperty("fogStartDistance");
+            fogEndDistanceProp = presetSerializedObject.FindProperty("fogEndDistance");
+            fogCutoffDistanceProp = presetSerializedObject.FindProperty("fogCutoffDistance");
+            fogColorProp = presetSerializedObject.FindProperty("fogColor");
+            fogAtmosphereLightingProp = presetSerializedObject.FindProperty("fogAtmosphereLighting");
+            fogSkyAtmosphereAmbientContributionColorScaleProp = presetSerializedObject.FindProperty("fogSkyAtmosphereAmbientContributionColorScale");
+            fogHeightFogContributionProp = presetSerializedObject.FindProperty("fogHeightFogContribution");
+            fogDirectionalInscatteringExponentProp = presetSerializedObject.FindProperty("fogDirectionalInscatteringExponent");
+            fogDirectionalInscatteringColorProp = presetSerializedObject.FindProperty("fogDirectionalInscatteringColor");
+            fogDirectionalInscatteringStartDistanceProp = presetSerializedObject.FindProperty("fogDirectionalInscatteringStartDistance");
+            fogHeightFalloffProp = presetSerializedObject.FindProperty("fogHeightFalloff");
+            secondFogEnabledProp = presetSerializedObject.FindProperty("secondFogEnabled");
+            secondFogDensityProp = presetSerializedObject.FindProperty("secondFogDensity");
+            secondFogHeightFalloffProp = presetSerializedObject.FindProperty("secondFogHeightFalloff");
+            secondFogHeightOffsetProp = presetSerializedObject.FindProperty("secondFogHeightOffset");
             exposureCompensationCurveProp = presetSerializedObject.FindProperty("exposureCompensationCurve");
             rainySpeedCurveProp = presetSerializedObject.FindProperty("rainySpeedCurve");
             precipitationAmountCurveProp = presetSerializedObject.FindProperty("precipitationAmountCurve");
@@ -180,26 +208,69 @@ namespace DawnTODEditor
                         EditorGUILayout.PropertyField(
                             fogEnabledProp,
                             new GUIContent("Enable"));
-                        if (capabilities.PipelineKind ==
-                            WeatherRenderPipelineKind.Universal)
+                        EditorGUILayout.LabelField("Primary Fog", EditorStyles.boldLabel);
+                        EditorGUILayout.PropertyField(fogDensityProp, new GUIContent("Fog Density"));
+                        EditorGUILayout.PropertyField(fogHeightFalloffProp, new GUIContent("Fog Height Falloff"));
+                        EditorGUILayout.Space();
+                        EditorGUILayout.PropertyField(secondFogEnabledProp, new GUIContent("Second Fog"));
+                        using (new EditorGUI.DisabledScope(!secondFogEnabledProp.boolValue))
                         {
-                            EditorGUILayout.PropertyField(
-                                fogAffectSkyProp,
-                                new GUIContent("Affect Sky"));
+                            EditorGUI.indentLevel++;
+                            EditorGUILayout.PropertyField(secondFogDensityProp, new GUIContent("Fog Density"));
+                            EditorGUILayout.PropertyField(secondFogHeightFalloffProp, new GUIContent("Fog Height Falloff"));
+                            EditorGUILayout.PropertyField(secondFogHeightOffsetProp, new GUIContent("Fog Height Offset (m)"));
+                            EditorGUI.indentLevel--;
                         }
-
-                        DrawCurveField(
-                            "Base Height (m)",
-                            fogHeightCurveProp,
-                            controller.NormalizedTime);
-                        DrawCurveField(
-                            "Mean Free Path (m)",
-                            fogDistanceCurveProp,
-                            controller.NormalizedTime);
-                        DrawGradientField(
-                            "Albedo",
-                            fogColorGradientProp,
-                            controller.NormalizedTime);
+                        EditorGUILayout.Space();
+                        EditorGUILayout.LabelField("Shared Settings", EditorStyles.boldLabel);
+                        EditorGUILayout.PropertyField(fogColorProp, new GUIContent("Fog Inscattering Color",
+                            "Additional inscattering luminance. Black leaves sky and Sun/Moon illumination intact when Use Sky Atmosphere is enabled."));
+                        if (capabilities.PipelineKind == WeatherRenderPipelineKind.Universal)
+                        {
+                            EditorGUILayout.PropertyField(fogAtmosphereLightingProp, new GUIContent("Use Sky Atmosphere"));
+                            using (new EditorGUI.DisabledScope(!fogAtmosphereLightingProp.boolValue))
+                            {
+                                EditorGUI.indentLevel++;
+                                EditorGUILayout.PropertyField(fogSkyAtmosphereAmbientContributionColorScaleProp, new GUIContent("Sky Atmosphere Ambient Contribution Color Scale"));
+                                EditorGUILayout.PropertyField(fogHeightFogContributionProp, new GUIContent("Height Fog Contribution"));
+                                EditorGUI.indentLevel--;
+                            }
+                        }
+                        if (capabilities.PipelineKind == WeatherRenderPipelineKind.Universal)
+                        {
+                            EditorGUILayout.PropertyField(fogDirectionalInscatteringColorProp, new GUIContent("Directional Inscattering Color"));
+                            EditorGUILayout.PropertyField(fogDirectionalInscatteringExponentProp, new GUIContent("Directional Inscattering Exponent"));
+                            EditorGUILayout.PropertyField(fogDirectionalInscatteringStartDistanceProp, new GUIContent("Directional Inscattering Start Distance (m)"));
+                        }
+                        EditorGUILayout.PropertyField(fogMaxOpacityProp, new GUIContent("Fog Max Opacity"));
+                        EditorGUILayout.PropertyField(fogStartDistanceProp, new GUIContent("Start Distance (m)"));
+                        EditorGUILayout.PropertyField(fogEndDistanceProp, new GUIContent("End Distance (m)"));
+                        EditorGUILayout.PropertyField(fogCutoffDistanceProp, new GUIContent("Fog Cutoff Distance (m)"));
+                        if (capabilities.PipelineKind == WeatherRenderPipelineKind.Universal)
+                        {
+                            EditorGUILayout.Space();
+                            EditorGUILayout.LabelField("Volumetric Fog", EditorStyles.boldLabel);
+                            var volumetricEnabled = volumetricFogProp.FindPropertyRelative("enabled");
+                            EditorGUILayout.PropertyField(volumetricEnabled, new GUIContent("Volumetric Fog"));
+                            using (new EditorGUI.DisabledScope(!volumetricEnabled.boolValue))
+                            {
+                                EditorGUI.indentLevel++;
+                                foreach (string field in new[] { "scatteringDistribution", "albedo", "emissive", "extinctionScale",
+                                    "viewDistance", "startDistance", "nearFadeInDistance", "staticLightingScatteringIntensity",
+                                    "overrideLightColorsWithFogInscatteringColors", "gridPixelSize", "gridSizeZ",
+                                    "temporalReprojection", "historyWeight" })
+                                {
+                                    var property = volumetricFogProp.FindPropertyRelative(field);
+                                    string label = ObjectNames.NicifyVariableName(field);
+                                    if (field.EndsWith("Distance")) label += " (m)";
+                                    EditorGUILayout.PropertyField(property, new GUIContent(label, property.tooltip));
+                                }
+                                EditorGUI.indentLevel--;
+                            }
+                        }
+                        EditorGUILayout.HelpBox(
+                            "Both layers add their density, as in UE. Use a shallow primary layer for broad haze and a lower, steeper second layer for near-ground fog. Distances and color are shared.",
+                            MessageType.Info);
                         EditorGUI.indentLevel--;
                     }
                 }

@@ -83,6 +83,10 @@ namespace DawnTOD
         [Tooltip("月亮方向光")]
         [SerializeField]
         public Light moonLight;
+        [Tooltip("Apply weather rotation, color, intensity and day/night activation to the referenced lights. Disable when preserving an authored cloud scene's lighting.")]
+        public bool driveDirectionalLights = true;
+        [Tooltip("Keep Sun and Moon enabled around sunrise/sunset so atmospheric twilight can blend continuously. Zero preserves the original hard switch.")]
+        [Range(0f,2f)] public float directionalLightOverlapHours;
 
         [Header("Precipitation Output")]
         [Tooltip("Scene rain output controlled by the blended precipitation result.")]
@@ -834,7 +838,7 @@ namespace DawnTOD
             }
 
             // ========== 应用太阳属性 ==========
-            if (sunLight != null)
+            if (driveDirectionalLights && sunLight != null)
             {
                 sunLight.transform.rotation = CreateLookRotation(mixedResult.SunDirection);
                 sunLight.intensity = mixedResult.SunIntensity;
@@ -842,17 +846,16 @@ namespace DawnTOD
             }
 
             // ========== 应用月亮属性 ==========
-            if (moonLight != null)
+            if (driveDirectionalLights && moonLight != null)
             {
                 moonLight.transform.rotation = CreateLookRotation(mixedResult.MoonDirection);
                 moonLight.intensity = mixedResult.MoonIntensity;
                 moonLight.color = mixedResult.MoonColor;
             }
 
-            ResolvePipelineFogToggles(
+            ResolvePipelineFogToggle(
                 mixedResult.DominantSourceIndex,
-                out bool fogEnabled,
-                out bool fogAffectSky);
+                out bool fogEnabled);
             IWeatherPipelineOutput output = ResolvePipelineOutput();
             if (output != null)
             {
@@ -861,12 +864,25 @@ namespace DawnTOD
                 output.Apply(
                     new WeatherPipelineOutputState(
                         mixedResult.StarEmission,
-                        mixedResult.FogDistance,
-                        mixedResult.FogHeight,
+                        mixedResult.FogDensity,
                         mixedResult.FogColor,
                         mixedResult.ExposureCompensation,
                         fogEnabled,
-                        fogAffectSky));
+                        mixedResult.FogHeightFalloff,
+                        transform.position.y,
+                        mixedResult.FogMaxOpacity,
+                        mixedResult.FogStartDistance,
+                        mixedResult.FogEndDistance,
+                        mixedResult.FogCutoffDistance,
+                        mixedResult.SecondFogDensity,
+                        mixedResult.SecondFogHeightFalloff,
+                        mixedResult.SecondFogHeightOffset,
+                        mixedResult.FogSkyAtmosphereAmbientContributionColorScale,
+                        mixedResult.FogHeightFogContribution,
+                        mixedResult.FogDirectionalInscatteringColor,
+                        mixedResult.FogDirectionalInscatteringExponent,
+                        mixedResult.FogDirectionalInscatteringStartDistance,
+                        mixedResult.VolumetricFog));
             }
 
             // ========== 应用雨水混合结果 ==========
@@ -1085,22 +1101,19 @@ namespace DawnTOD
                 this);
         }
 
-        private void ResolvePipelineFogToggles(
+        private void ResolvePipelineFogToggle(
             int sourceIndex,
-            out bool fogEnabled,
-            out bool fogAffectSky)
+            out bool fogEnabled)
         {
             // Keep the legacy fallback behavior when no controller is providing
             // the blended result.
             fogEnabled = true;
-            fogAffectSky = true;
 
 #if UNITY_EDITOR
             if (sourceIndex == DebugWeatherPreviewSourceIndex &&
                 debugWeatherPreviewController != null)
             {
                 fogEnabled = debugWeatherPreviewController.FogEnabled;
-                fogAffectSky = debugWeatherPreviewController.FogAffectSky;
                 return;
             }
 #endif
@@ -1116,7 +1129,6 @@ namespace DawnTOD
             if (controller != null)
             {
                 fogEnabled = controller.FogEnabled;
-                fogAffectSky = controller.FogAffectSky;
             }
         }
 
@@ -1177,16 +1189,24 @@ namespace DawnTOD
 
         private void CheckDayNightTransition()
         {
-            isNight = timeOfDay < sunriseTime || timeOfDay >= sunsetTime;
-            if (sunLight != null && sunLight.gameObject.activeSelf != !isNight)
+            float dayDuration = sunsetTime-sunriseTime;
+            if (dayDuration<0f) dayDuration+=24f;
+            isNight = Mathf.Repeat(timeOfDay-sunriseTime,24f) >= dayDuration;
+            if (!driveDirectionalLights) return;
+            float overlap = Mathf.Clamp(directionalLightOverlapHours,0f,2f);
+            // Circular day interval also handles schedules spanning midnight.
+            bool sunActive = Mathf.Repeat(timeOfDay-sunriseTime+overlap,24f) < Mathf.Min(24f,dayDuration+2f*overlap);
+            bool moonActive = !(Mathf.Repeat(timeOfDay-sunriseTime-overlap,24f) < Mathf.Max(0f,dayDuration-2f*overlap));
+            if (sunLight != null && sunLight.gameObject.activeSelf != sunActive)
             {
-                sunLight.gameObject.SetActive(!isNight);
+                sunLight.gameObject.SetActive(sunActive);
             }
 
-            if (moonLight != null && moonLight.gameObject.activeSelf != isNight)
+            if (moonLight != null && moonLight.gameObject.activeSelf != moonActive)
             {
-                moonLight.gameObject.SetActive(isNight);
+                moonLight.gameObject.SetActive(moonActive);
             }
+            RenderSettings.sun = GetMainDirectionalLight();
         }
         #endregion
 

@@ -83,15 +83,6 @@ namespace DawnTODEditor
                 Array.Empty<(string name, Gradient gradient)>()
                 );
 
-            CreateTrackGroup("Fog", BuiltinType.Fog, ref trackIndex,
-                new[] {
-                    ("Base Height (m)", activePreset.fogHeightCurve),
-                    ("Mean Free Path (m)", activePreset.fogDistanceCurve)
-                },
-                new[] {
-                    ("Albedo", activePreset.fogColorGradient)
-                });
-
             CreateTrackGroup("Exposure",BuiltinType.Exposure,ref trackIndex,
                 new[] {
                     ("Compensation",activePreset.exposureCompensationCurve),

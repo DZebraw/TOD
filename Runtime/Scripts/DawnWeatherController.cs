@@ -30,10 +30,6 @@ namespace DawnTOD
         [SerializeField]
         private bool fogEnabled = true;
 
-        [Tooltip("Applies fog to pixels that contain only the sky background.")]
-        [SerializeField]
-        private bool fogAffectSky = true;
-
         public DawnWeatherPreset ActivePreset
         {
             get => activePreset;
@@ -51,7 +47,6 @@ namespace DawnTOD
         public float NormalizedTime => GetNormalizedTime();
 
         public bool FogEnabled => fogEnabled;
-        public bool FogAffectSky => fogAffectSky;
 
         public bool IsNight
         {

@@ -76,9 +76,6 @@
 //            if (showFogSettings)
 //            {
 //                EditorGUI.indentLevel++;
-//                DrawCurveWithPreview("Height", serializedObject.FindProperty("fogHeightCurve"), previewTime, "");
-//                DrawCurveWithPreview("Distance (MFP)", serializedObject.FindProperty("fogDistanceCurve"), previewTime, " m");
-//                DrawGradientWithPreview("Color", serializedObject.FindProperty("fogColorGradient"), previewTime);
 //                EditorGUI.indentLevel--;
 //            }
 //            EditorGUILayout.Space(5);

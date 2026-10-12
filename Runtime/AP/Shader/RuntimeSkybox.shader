@@ -100,7 +100,7 @@
                 
                 float3 extinction;
                 
-                float3 inscattering = IntegrateInscattering(rayStart, rayDir, rayLength, planetCenter, 1, lightDir, SAMPLECOUNT_KSYBOX, extinction);
+                float3 inscattering = IntegrateAtmosphereLights(rayStart, rayDir, rayLength, planetCenter, SAMPLECOUNT_KSYBOX, extinction);
                 float3 background = hitsGround
                     ? _AtmosphereGroundColor
                     : SampleSpaceEmission(rayDir);

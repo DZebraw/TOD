@@ -30,9 +30,22 @@ namespace DawnTOD
         public float MoonIntensity { get; }
         public Color MoonColor { get; }
         public float StarEmission { get; }
-        public float FogDistance { get; }
-        public float FogHeight { get; }
+        public float FogDensity { get; }
+        public float FogMaxOpacity { get; }
+        public float FogStartDistance { get; }
+        public float FogEndDistance { get; }
+        public float FogCutoffDistance { get; }
+        public float FogHeightFalloff { get; }
+        public float SecondFogDensity { get; }
+        public float SecondFogHeightFalloff { get; }
+        public float SecondFogHeightOffset { get; }
         public Color FogColor { get; }
+        public Color FogSkyAtmosphereAmbientContributionColorScale { get; }
+        public float FogHeightFogContribution { get; }
+        public Color FogDirectionalInscatteringColor { get; }
+        public float FogDirectionalInscatteringExponent { get; }
+        public float FogDirectionalInscatteringStartDistance { get; }
+        public DawnVolumetricFogSettings VolumetricFog { get; }
         public float ExposureCompensation { get; }
         public float PrecipitationAmount { get; }
         public float RainSpeed { get; }
@@ -50,15 +63,28 @@ namespace DawnTOD
             float moonIntensity,
             Color moonColor,
             float starEmission,
-            float fogDistance,
-            float fogHeight,
+            float fogDensity,
             Color fogColor,
             float exposureCompensation,
             float precipitationAmount,
             float rainSpeed,
             float rainDensity,
             float rainWindZRotation,
-            int dominantSourceIndex)
+            int dominantSourceIndex,
+            float fogHeightFalloff = 0.2f,
+            float fogMaxOpacity = 1f,
+            float fogStartDistance = 0f,
+            float fogEndDistance = 0f,
+            float fogCutoffDistance = 0f,
+            float secondFogDensity = 0f,
+            float secondFogHeightFalloff = 0.2f,
+            float secondFogHeightOffset = 0f,
+            Color? fogSkyAtmosphereAmbientContributionColorScale = null,
+            float fogHeightFogContribution = 1f,
+            Color? fogDirectionalInscatteringColor = null,
+            float fogDirectionalInscatteringExponent = 4f,
+            float fogDirectionalInscatteringStartDistance = 100f,
+            DawnVolumetricFogSettings? volumetricFog = null)
         {
             SunDirection = sunDirection;
             SunIntensity = sunIntensity;
@@ -67,9 +93,22 @@ namespace DawnTOD
             MoonIntensity = moonIntensity;
             MoonColor = moonColor;
             StarEmission = starEmission;
-            FogDistance = fogDistance;
-            FogHeight = fogHeight;
+            FogDensity = fogDensity;
+            FogMaxOpacity = fogMaxOpacity;
+            FogStartDistance = fogStartDistance;
+            FogEndDistance = fogEndDistance;
+            FogCutoffDistance = fogCutoffDistance;
+            FogHeightFalloff = fogHeightFalloff;
+            SecondFogDensity = secondFogDensity;
+            SecondFogHeightFalloff = secondFogHeightFalloff;
+            SecondFogHeightOffset = secondFogHeightOffset;
             FogColor = fogColor;
+            FogSkyAtmosphereAmbientContributionColorScale = fogSkyAtmosphereAmbientContributionColorScale ?? Color.white;
+            FogHeightFogContribution = fogHeightFogContribution;
+            FogDirectionalInscatteringColor = fogDirectionalInscatteringColor ?? Color.black;
+            FogDirectionalInscatteringExponent = fogDirectionalInscatteringExponent;
+            FogDirectionalInscatteringStartDistance = fogDirectionalInscatteringStartDistance;
+            VolumetricFog = (volumetricFog ?? DawnVolumetricFogSettings.Default).Sanitized();
             ExposureCompensation = exposureCompensation;
             PrecipitationAmount = precipitationAmount;
             RainSpeed = rainSpeed;
@@ -81,7 +120,6 @@ namespace DawnTOD
 
     internal static class WeatherBlender
     {
-        internal const float MinimumFogDistance = 0.01f;
         internal const float PrecipitationEpsilon = 0.000001f;
 
         private const double DirectionMagnitudeEpsilonSquared = 0.000000000001d;
@@ -148,11 +186,25 @@ namespace DawnTOD
             double moonColorG = 0d;
             double moonColorB = 0d;
             double starEmission = 0d;
-            double fogExtinction = 0d;
-            double fogHeight = 0d;
+            var volumetricFog = new DawnVolumetricFogBlend();
+            double fogDensity = 0d;
+            double fogMaxOpacity = 0d;
+            double fogStartDistance = 0d;
+            double fogEndDistance = 0d;
+            double fogCutoffDistance = 0d;
+            double fogHeightFalloff = 0d;
+            double secondFogDensity = 0d;
+            double secondFogShapeWeight = 0d;
+            double secondFogHeightFalloff = 0d;
+            double secondFogHeightOffset = 0d;
             double fogColorR = 0d;
             double fogColorG = 0d;
             double fogColorB = 0d;
+            double fogSkyScaleR = 0d, fogSkyScaleG = 0d, fogSkyScaleB = 0d;
+            double fogHeightFogContribution = 0d;
+            double fogDirectionalR = 0d, fogDirectionalG = 0d, fogDirectionalB = 0d;
+            double fogDirectionalInscatteringExponent = 0d;
+            double fogDirectionalInscatteringStartDistance = 0d;
             double exposureCompensation = 0d;
             double precipitationAmount = 0d;
 
@@ -220,9 +272,30 @@ namespace DawnTOD
                     ref moonColorB);
                 starEmission += SanitizeNonNegative(sample.StarEmission) * normalizedWeight;
 
-                double fogDistance = SanitizeFogDistance(sample.FogDistance);
-                fogExtinction += normalizedWeight / fogDistance;
-                fogHeight += SanitizeFinite(sample.FogHeight) * normalizedWeight;
+                volumetricFog.Add(sample.VolumetricFog, normalizedWeight);
+                fogDensity += Math.Min(10d, SanitizeNonNegative(sample.FogDensity)) * normalizedWeight;
+                fogMaxOpacity += Clamp01(SanitizeFinite(sample.FogMaxOpacity)) * normalizedWeight;
+                fogStartDistance += SanitizeNonNegative(sample.FogStartDistance) * normalizedWeight;
+                fogEndDistance += SanitizeNonNegative(sample.FogEndDistance) * normalizedWeight;
+                fogCutoffDistance += SanitizeNonNegative(sample.FogCutoffDistance) * normalizedWeight;
+                fogHeightFalloff += Math.Min(2d, SanitizeNonNegative(sample.FogHeightFalloff)) * normalizedWeight;
+                AccumulateColor(sample.FogSkyAtmosphereAmbientContributionColorScale, normalizedWeight,
+                    ref fogSkyScaleR, ref fogSkyScaleG, ref fogSkyScaleB);
+                fogHeightFogContribution += SanitizeNonNegative(sample.FogHeightFogContribution) * normalizedWeight;
+                AccumulateColor(sample.FogDirectionalInscatteringColor, normalizedWeight,
+                    ref fogDirectionalR, ref fogDirectionalG, ref fogDirectionalB);
+                fogDirectionalInscatteringExponent += Math.Max(0.000001d, Math.Min(1000d,
+                    SanitizeFinite(sample.FogDirectionalInscatteringExponent))) * normalizedWeight;
+                fogDirectionalInscatteringStartDistance += SanitizeNonNegative(sample.FogDirectionalInscatteringStartDistance) * normalizedWeight;
+                double secondaryDensity = Math.Min(10d, SanitizeNonNegative(sample.SecondFogDensity));
+                secondFogDensity += secondaryDensity * normalizedWeight;
+                if (secondaryDensity > 0d)
+                {
+                    // Fade a disabled layer through density, without changing the active layer's shape.
+                    secondFogShapeWeight += normalizedWeight;
+                    secondFogHeightFalloff += Math.Min(2d, SanitizeNonNegative(sample.SecondFogHeightFalloff)) * normalizedWeight;
+                    secondFogHeightOffset += SanitizeFinite(sample.SecondFogHeightOffset) * normalizedWeight;
+                }
                 AccumulateColor(
                     sample.FogColor,
                     normalizedWeight,
@@ -270,9 +343,6 @@ namespace DawnTOD
                 dominantMoonDirection,
                 hasDominantMoonDirection);
 
-            double blendedFogDistance = fogExtinction > 0d
-                ? 1d / fogExtinction
-                : MinimumFogDistance;
             double clampedPrecipitation = Clamp01(precipitationAmount);
 
             double blendedRainSpeed = 0d;
@@ -300,15 +370,30 @@ namespace DawnTOD
                 ToFiniteNonNegativeFloat(moonIntensity),
                 CreateColor(moonColorR, moonColorG, moonColorB),
                 ToFiniteNonNegativeFloat(starEmission),
-                Math.Max(MinimumFogDistance, ToFiniteNonNegativeFloat(blendedFogDistance)),
-                ToFiniteFloat(fogHeight),
+                ToFiniteNonNegativeFloat(fogDensity),
                 CreateColor(fogColorR, fogColorG, fogColorB),
                 ToFiniteFloat(exposureCompensation),
                 (float)clampedPrecipitation,
                 ToFiniteNonNegativeFloat(blendedRainSpeed),
                 ToFiniteNonNegativeFloat(outputRainDensity),
                 NormalizeAngle(ToFiniteFloat(blendedRainWind)),
-                dominantSourceIndex);
+                dominantSourceIndex,
+                ToFiniteNonNegativeFloat(fogHeightFalloff),
+                (float)Clamp01(fogMaxOpacity),
+                ToFiniteNonNegativeFloat(fogStartDistance),
+                ToFiniteNonNegativeFloat(fogEndDistance),
+                ToFiniteNonNegativeFloat(fogCutoffDistance),
+                ToFiniteNonNegativeFloat(secondFogDensity),
+                secondFogShapeWeight > 0d
+                    ? ToFiniteNonNegativeFloat(secondFogHeightFalloff / secondFogShapeWeight) : 0.2f,
+                secondFogShapeWeight > 0d
+                    ? ToFiniteFloat(secondFogHeightOffset / secondFogShapeWeight) : 0f,
+                CreateColor(fogSkyScaleR, fogSkyScaleG, fogSkyScaleB),
+                ToFiniteNonNegativeFloat(fogHeightFogContribution),
+                CreateColor(fogDirectionalR, fogDirectionalG, fogDirectionalB),
+                ToFiniteNonNegativeFloat(fogDirectionalInscatteringExponent),
+                ToFiniteNonNegativeFloat(fogDirectionalInscatteringStartDistance),
+                volumetricFog.Resolve());
             return true;
         }
 
@@ -389,13 +474,6 @@ namespace DawnTOD
                 ToFiniteNonNegativeFloat(green),
                 ToFiniteNonNegativeFloat(blue),
                 1f);
-        }
-
-        private static double SanitizeFogDistance(float value)
-        {
-            return IsFinite(value) && value >= MinimumFogDistance
-                ? value
-                : MinimumFogDistance;
         }
 
         private static double SanitizeNonNegative(float value)
